@@ -138,7 +138,7 @@ async def send_telegram(session, text: str):
 
 async def tg_notify(session, r: dict, scan: int):
     """Kirim notif ke Telegram, anti-spam 30 menit per market"""
-    if r['signal'] not in ['💰 ARBITRAGE','🔥 STRONG BUY','✅ BUY','⚡ EDGE']:
+    if r['signal'] not in ['💰 ARBITRAGE','🔥 STRONG BUY','✅ BUY','⚡ EDGE','🔊 VOL SPIKE','📈 MOMENTUM']:
         return
     now = time.time()
     if now - _tg_sent.get(r['id'], 0) < 1800:
@@ -508,22 +508,54 @@ def analyze(names, gamma_px, clob, liquidity, volume, days, prev_px) -> Optional
     score = arb_s + ev_s + spd_s + liq_s + vol_s + mom_s + near_bonus + vol_bonus
 
     # ── SIGNAL ───────────────────────────────────────────────────
+    # Combo signals — kombinasi faktor yang lebih realistis
+    # ARBITRAGE: beli semua outcome, profit dijamin
     if is_arb and arb_profit > 0.2:
         signal, action, color = '💰 ARBITRAGE', f'BELI {" + ".join(names[:2])}', GG
-    elif ev_pct >= 6:
-        signal, action, color = '🔥 STRONG BUY', f'BUY {entry_name[:12].upper()}', GG
-    elif ev_pct >= 3:
-        signal, action, color = '✅ BUY', f'BUY {entry_name[:12].upper()}', G
-    elif near_res and ev_pct > 0:
-        signal, action, color = '⏰ NEAR-RES', f'BUY {entry_name[:12].upper()}', YY
-    elif vol_spike and ev_pct > 0:
+
+    # STRONG BUY: momentum kuat + pasar mau tutup + volume spike
+    elif (abs(momentum_pct) >= 10 and near_res and vol_spike):
+        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
+        signal, action, color = '🔥 STRONG BUY', f'BUY {direction[:12].upper()}', GG
+
+    # BUY: momentum kuat + salah satu faktor lain
+    elif (abs(momentum_pct) >= 10 and near_res):
+        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
+        signal, action, color = '✅ BUY', f'BUY {direction[:12].upper()}', G
+
+    elif (abs(momentum_pct) >= 10 and vol_spike):
+        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
+        signal, action, color = '✅ BUY', f'BUY {direction[:12].upper()}', G
+
+    elif (abs(momentum_pct) >= 15):
+        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
+        signal, action, color = '✅ BUY', f'BUY {direction[:12].upper()}', G
+
+    # EDGE: momentum sedang + near-res
+    elif (abs(momentum_pct) >= 5 and near_res):
+        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
+        signal, action, color = '⚡ EDGE', f'BUY {direction[:12].upper()}', YY
+
+    # EDGE: volume spike + near-res
+    elif (vol_spike and near_res):
+        signal, action, color = '⚡ EDGE', f'WATCH {entry_name[:10].upper()}', YY
+
+    # Vol spike saja
+    elif vol_spike and volume > liquidity * 5:
         signal, action, color = '🔊 VOL SPIKE', f'WATCH {entry_name[:10].upper()}', Y
-    elif ev_pct >= 1 or max_spread > CFG['MIN_SPREAD'] * 100:
-        signal, action, color = '⚡ EDGE', f'BUY {entry_name[:12].upper()}', Y
-    elif momentum_pct >= 5:
-        signal, action, color = '📈 MOMENTUM', f'WATCH {names[0][:10].upper()}', C
+
+    # Near-res saja
+    elif near_res and days is not None and days < 0.25:
+        signal, action, color = '⏰ NEAR-RES', f'WATCH {entry_name[:10].upper()}', Y
+
+    # Momentum saja
+    elif abs(momentum_pct) >= 5:
+        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
+        signal, action, color = '📈 MOMENTUM', f'WATCH {direction[:10].upper()}', C
+
     elif near_res:
-        signal, action, color = '⏰ NEAR-RES', 'MONITOR CLOSELY', Y
+        signal, action, color = '⏰ NEAR-RES', 'MONITOR', Y
+
     else:
         signal, action, color = '➖ MONITOR', 'MONITOR', W
 
@@ -610,7 +642,7 @@ def display_stats(st: dict):
         print(tabulate(rows, headers=['Waktu','Signal','Pasar','Entry','Bet','Status','P&L'], tablefmt='simple'))
 
 def display(results, stats_scan, stats_j):
-    if CFG['CLEAR_SCREEN']: os.system('clear')
+    if CFG['CLEAR_SCREEN']: os.system('clear 2>/dev/null || cls 2>/dev/null || true')
     banner()
     sp  = SPIN[stats_scan['scans'] % len(SPIN)]
     ts  = datetime.now().strftime('%H:%M:%S')
@@ -790,7 +822,7 @@ async def main():
 
                 # Alert & journal untuk sinyal kuat
                 for r in top:
-                    is_strong = r['signal'] in ['💰 ARBITRAGE','🔥 STRONG BUY','✅ BUY']
+                    is_strong = r['signal'] in ['💰 ARBITRAGE','🔥 STRONG BUY','✅ BUY','⚡ EDGE','🔊 VOL SPIKE']
                     if is_strong:
                         alerts += 1
                         await tg_notify(session, r, scans)
