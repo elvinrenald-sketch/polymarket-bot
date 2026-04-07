@@ -1,32 +1,25 @@
 #!/usr/bin/env python3
 """
-POLYMARKET SCANNER v9.0 — REAL MISPRICING
-==========================================
-Algoritma mispricing yang BENAR:
+POLYMARKET FULL AUTO BOT v10.0
+================================
+FITUR UTAMA:
+  ✅ Auto OPEN posisi saat sinyal kuat
+  ✅ Auto CLOSE posisi (Take Profit / Stop Loss / Time Exit)
+  ✅ Max 10 posisi terbuka, $1 per entry
+  ✅ Tidak open baru jika sudah 10 posisi
+  ✅ Journal lengkap dengan P&L
+  ✅ Notifikasi Telegram setiap open dan close
 
-MISPRICING NYATA di Polymarket ada 5 jenis:
+CARA CLOSE OTOMATIS:
+  - Take Profit: harga naik 50% dari entry → jual, ambil profit
+  - Stop Loss: harga turun 40% dari entry → jual, potong rugi
+  - Time Exit: sisa waktu < 30 menit → jual berapapun harganya
+  - Resolved: market selesai → catat hasil (win/loss)
 
-1. ARBITRAGE MURNI
-   YES_ask + NO_ask < 1.0
-   → Beli YES dan NO sekaligus, dapat $1, bayar kurang dari $1
-   → Profit dijamin tanpa risiko
-
-2. BID-ASK SPREAD LEBAR
-   Spread > 5% = pasar tidak liquid = harga tidak efisien
-   → Ada celah untuk masuk di harga yang lebih baik
-
-3. ORDERBOOK IMBALANCE
-   Banyak buyer di YES tapi sedikit seller → harga YES akan naik
-   Deteksi dari: best_bid jauh dari best_ask
-
-4. NEAR-RESOLUTION + EXTREME PRICE
-   Pasar tutup < 6 jam, harga masih 0.15-0.85
-   → Market belum consensus = volatil = peluang
-
-5. VOLUME SPIKE ANOMALI
-   Volume tiba-tiba 5x lebih besar dari rata-rata
-   → Ada informasi baru yang masuk
-   → Harga akan bergerak, masuk sebelum terlambat
+CATATAN PENTING:
+  Bot ini adalah PAPER TRADING dulu.
+  Untuk real trading perlu install: pip install py-clob-client eth-account
+  Dan isi PRIVATE_KEY di Railway Variables.
 """
 
 import asyncio
@@ -39,7 +32,7 @@ import csv
 import sqlite3
 import logging
 from datetime import datetime, timezone
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from colorama import Fore, Style, init
 from tabulate import tabulate
 from pathlib import Path
@@ -47,7 +40,7 @@ from pathlib import Path
 init(autoreset=True)
 
 # ══════════════════════════════════════════════════════════════════
-# ENV VARIABLES (Railway inject otomatis)
+# ENVIRONMENT VARIABLES
 # ══════════════════════════════════════════════════════════════════
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
@@ -59,26 +52,40 @@ AUTO_TRADE       = os.environ.get('AUTO_TRADE', 'false').lower() == 'true'
 # KONFIGURASI
 # ══════════════════════════════════════════════════════════════════
 CFG = {
+    # API
     'GAMMA_API'         : 'https://gamma-api.polymarket.com',
     'CLOB_API'          : 'https://clob.polymarket.com',
+
+    # Scanner
     'SCAN_INTERVAL'     : 15,
     'MARKETS_PER_PAGE'  : 100,
     'MAX_PAGES'         : 15,
-    'DISPLAY_TOP'       : 15,
+    'DISPLAY_TOP'       : 10,
     'CLEAR_SCREEN'      : True,
-    'BANKROLL'          : 10.00,
-    'TRADE_PER_SIGNAL'  : 1.00,
-    'MAX_EXPOSURE'      : 10.00,
-    'KELLY_FRACTION'    : 0.25,
 
-    # Threshold sinyal
-    'ARB_THRESHOLD'     : 0.995,   # sum ask < ini = ARBITRAGE
-    'MIN_SPREAD'        : 0.03,    # spread > 3% = pasar tidak efisien
-    'NEAR_RES_HOURS'    : 6,       # pasar tutup < 6 jam
-    'VOL_SPIKE_RATIO'   : 3.0,     # volume > 3x likuiditas = spike
+    # ── RISK MANAGEMENT ──────────────────────────────────────────
+    'BANKROLL'          : 10.00,    # Total modal $10
+    'TRADE_PER_SIGNAL'  : 1.00,     # $1 per entry
+    'MAX_POSITIONS'     : 10,       # Maksimal 10 posisi terbuka
+    'MAX_EXPOSURE'      : 10.00,    # Max $10 total exposure
+
+    # ── AUTO-CLOSE CONDITIONS ────────────────────────────────────
+    'TAKE_PROFIT_PCT'   : 50.0,     # Jual jika harga naik 50% dari entry
+    'STOP_LOSS_PCT'     : 40.0,     # Jual jika harga turun 40% dari entry
+    'TIME_EXIT_MINUTES' : 30,       # Jual jika sisa waktu < 30 menit
+    'FORCE_EXIT_MINUTES': 5,        # Force jual jika sisa < 5 menit
+
+    # ── SIGNAL THRESHOLDS ────────────────────────────────────────
+    'MIN_MOMENTUM'      : 10.0,     # Min momentum % untuk entry
+    'MIN_LIQUIDITY'     : 500,      # Min likuiditas untuk entry
+    'VOL_SPIKE_RATIO'   : 3.0,      # Volume > 3x liq = spike
+    'NEAR_RES_HOURS'    : 6,        # Pasar tutup < 6 jam
+
+    'KELLY_FRACTION'    : 0.25,
+    'SOUND_ALERT'       : False,
 }
 
-# Journal paths
+# Journal
 JOURNAL_DIR = os.path.expanduser('~/polymarket-scanner/journal')
 Path(JOURNAL_DIR).mkdir(parents=True, exist_ok=True)
 DB_PATH  = os.path.join(JOURNAL_DIR, 'trades.db')
@@ -96,9 +103,9 @@ log = logging.getLogger('poly')
 # WARNA
 # ══════════════════════════════════════════════════════════════════
 GG=Fore.GREEN+Style.BRIGHT; G=Fore.GREEN; R=Fore.RED; RR=Fore.RED+Style.BRIGHT
-Y=Fore.YELLOW; YY=Fore.YELLOW+Style.BRIGHT; C=Fore.CYAN; CC=Fore.CYAN+Style.BRIGHT
-W=Fore.WHITE; WW=Fore.WHITE+Style.BRIGHT; M=Fore.MAGENTA; Z=Style.RESET_ALL
-SPIN = ['⣾','⣽','⣻','⢿','⡿','⣟','⣯','⣷']
+Y=Fore.YELLOW; YY=Fore.YELLOW+Style.BRIGHT; C=Fore.CYAN; W=Fore.WHITE
+WW=Fore.WHITE+Style.BRIGHT; M=Fore.MAGENTA; Z=Style.RESET_ALL
+SPIN=['⣾','⣽','⣻','⢿','⡿','⣟','⣯','⣷']
 
 def fp(v,d=2):
     if v>=5: return f'{GG}{v:+.{d}f}%{Z}'
@@ -113,19 +120,191 @@ def fu(v):
     return f'${v:.0f}'
 
 def fd(d):
-    if d is None: return f'{W}—{Z}'
+    if d is None: return '—'
     if d<0: return f'{R}EXP{Z}'
+    if d<0.021: return f'{RR}<30m{Z}'
     if d<0.25: return f'{RR}<6h{Z}'
-    if d<1: return f'{RR}{d*24:.0f}h{Z}'
-    if d<7: return f'{Y}{d:.1f}d{Z}'
-    return f'{W}{d:.0f}d{Z}'
+    if d<1: return f'{Y}{d*24:.0f}h{Z}'
+    return f'{W}{d:.1f}d{Z}'
+
+# ══════════════════════════════════════════════════════════════════
+# DATABASE
+# ══════════════════════════════════════════════════════════════════
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS positions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        open_ts      TEXT NOT NULL,
+        close_ts     TEXT,
+        market_id    TEXT,
+        condition_id TEXT,
+        token_id     TEXT,
+        question     TEXT,
+        signal       TEXT,
+        outcome      TEXT,
+        entry_price  REAL,
+        exit_price   REAL,
+        amount_usd   REAL,
+        shares       REAL,
+        status       TEXT DEFAULT "OPEN",
+        close_reason TEXT,
+        pnl_usd      REAL,
+        pnl_pct      REAL,
+        result       TEXT,
+        order_id_open  TEXT,
+        order_id_close TEXT,
+        end_date     TEXT,
+        notes        TEXT
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS scan_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT, fetched INTEGER, valid INTEGER,
+        open_pos INTEGER, ms INTEGER
+    )''')
+    conn.commit()
+    conn.close()
+
+def db_open_position(r: dict, amount: float, shares: float,
+                     order_id: str = '') -> int:
+    ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(DB_PATH)
+    cur  = conn.cursor()
+    cur.execute('''INSERT INTO positions
+        (open_ts,market_id,condition_id,token_id,question,signal,outcome,
+         entry_price,amount_usd,shares,status,order_id_open,end_date)
+        VALUES (?,?,?,?,?,?,?,?,?,?,"OPEN",?,?)''', (
+        ts,
+        r.get('id',''),
+        r.get('condition_id',''),
+        r.get('entry_token_id',''),
+        r.get('question','')[:200],
+        r.get('signal',''),
+        r.get('entry_outcome',''),
+        r.get('entry_price',0),
+        amount, shares, order_id,
+        r.get('end_date',''),
+    ))
+    pos_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    # CSV log
+    _csv_append({
+        'id': pos_id, 'ts': ts, 'type': 'OPEN',
+        'signal': r.get('signal',''),
+        'question': r.get('question','')[:80],
+        'outcome': r.get('entry_outcome',''),
+        'price': r.get('entry_price',0),
+        'amount': amount, 'shares': shares,
+        'status': 'OPEN', 'pnl': '',
+    })
+    log.info(f"OPEN #{pos_id}: {r.get('signal')} | {r.get('entry_outcome')} "
+             f"@ {r.get('entry_price',0):.3f} | ${amount:.2f}")
+    return pos_id
+
+def db_close_position(pos_id: int, exit_price: float,
+                      reason: str, order_id: str = ''):
+    conn = sqlite3.connect(DB_PATH)
+    cur  = conn.cursor()
+    cur.execute('SELECT entry_price, amount_usd, shares, outcome FROM positions WHERE id=?',
+                (pos_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return 0
+
+    entry_price, amount_usd, shares, outcome = row
+
+    # Hitung P&L
+    # Di Polymarket: jual shares di exit_price
+    proceeds = shares * exit_price
+    pnl_usd  = proceeds - amount_usd
+    pnl_pct  = (pnl_usd / amount_usd * 100) if amount_usd > 0 else 0
+    result   = 'WIN' if pnl_usd > 0 else 'LOSS'
+
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cur.execute('''UPDATE positions SET
+        close_ts=?, exit_price=?, status="CLOSED",
+        close_reason=?, pnl_usd=?, pnl_pct=?,
+        result=?, order_id_close=?
+        WHERE id=?''', (
+        ts, exit_price, reason, round(pnl_usd,4),
+        round(pnl_pct,2), result, order_id, pos_id
+    ))
+    conn.commit()
+    conn.close()
+
+    _csv_append({
+        'id': pos_id, 'ts': ts, 'type': 'CLOSE',
+        'signal': reason, 'question': '', 'outcome': outcome,
+        'price': exit_price, 'amount': amount_usd,
+        'shares': shares, 'status': 'CLOSED',
+        'pnl': round(pnl_usd, 4),
+    })
+    log.info(f"CLOSE #{pos_id}: {reason} @ {exit_price:.3f} | "
+             f"P&L: ${pnl_usd:+.3f} ({pnl_pct:+.1f}%) [{result}]")
+    return pnl_usd
+
+def db_get_open_positions() -> List[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    cur  = conn.cursor()
+    cur.execute('''SELECT id,open_ts,market_id,token_id,question,signal,
+                          outcome,entry_price,amount_usd,shares,end_date
+                   FROM positions WHERE status="OPEN" ORDER BY id''')
+    rows = cur.fetchall()
+    conn.close()
+    positions = []
+    for r in rows:
+        positions.append({
+            'id': r[0], 'open_ts': r[1], 'market_id': r[2],
+            'token_id': r[3], 'question': r[4], 'signal': r[5],
+            'outcome': r[6], 'entry_price': r[7], 'amount_usd': r[8],
+            'shares': r[9], 'end_date': r[10],
+        })
+    return positions
+
+def db_get_stats() -> dict:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur  = conn.cursor()
+        cur.execute('SELECT COUNT(*) FROM positions')
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED'")
+        closed = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN'")
+        open_c = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND pnl_usd>0")
+        wins = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED'")
+        pnl = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(amount_usd),0) FROM positions WHERE status='OPEN'")
+        exposure = cur.fetchone()[0]
+        cur.execute('''SELECT open_ts,signal,substr(question,1,25),
+                              entry_price,amount_usd,status,pnl_usd,close_reason
+                       FROM positions ORDER BY id DESC LIMIT 8''')
+        recent = cur.fetchall()
+        conn.close()
+        wr = (wins/closed*100) if closed>0 else 0
+        return {
+            'total':total,'closed':closed,'open':open_c,
+            'wins':wins,'losses':closed-wins,'win_rate':wr,
+            'pnl':pnl,'exposure':exposure,'recent':recent
+        }
+    except:
+        return {'total':0,'closed':0,'open':0,'wins':0,'losses':0,
+                'win_rate':0,'pnl':0,'exposure':0,'recent':[]}
+
+def _csv_append(row: dict):
+    exists = os.path.exists(CSV_PATH)
+    with open(CSV_PATH, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=row.keys())
+        if not exists: w.writeheader()
+        w.writerow(row)
 
 # ══════════════════════════════════════════════════════════════════
 # TELEGRAM
 # ══════════════════════════════════════════════════════════════════
-_tg_sent: Dict[str, float] = {}
-
-async def send_telegram(session, text: str):
+async def tg(session, text: str):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -136,125 +315,34 @@ async def send_telegram(session, text: str):
         )
     except: pass
 
-async def tg_notify(session, r: dict, scan: int):
-    """Kirim notif ke Telegram, anti-spam 30 menit per market"""
-    if r['signal'] not in ['💰 ARBITRAGE','🔥 STRONG BUY','✅ BUY','⚡ EDGE','🔊 VOL SPIKE','📈 MOMENTUM']:
-        return
-    now = time.time()
-    if now - _tg_sent.get(r['id'], 0) < 1800:
-        return
-    _tg_sent[r['id']] = now
+async def tg_open(session, r: dict, pos_id: int, amount: float):
+    text = (
+        f"🟢 <b>OPEN POSISI #{pos_id}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 {r['question'][:70]}\n\n"
+        f"🎯 {r['signal']} → <b>{r['action']}</b>\n"
+        f"💰 Entry: <b>{r['entry_price']:.4f}</b>\n"
+        f"💵 Bet: <b>${amount:.2f}</b>\n"
+        f"⏰ Sisa: {fd(r.get('days')).replace(chr(27)+'[0m','').replace(chr(27),'')}\n"
+        f"📋 Mode: {'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'}"
+    )
+    await tg(session, text)
 
-    lines = [
-        f"<b>{r['signal']}</b>",
-        f"━━━━━━━━━━━━━━━━",
-        f"📊 <b>{r['question'][:80]}</b>",
-        f"",
-        f"🎯 Action: <b>{r['action']}</b>",
-        f"💰 Entry: <b>{r['entry_price']:.4f}</b>",
-    ]
-    if r.get('arb_profit', 0) > 0:
-        lines.append(f"💎 Arb Profit: <b>{r['arb_profit']:+.2f}%</b>")
-    if r.get('spread_pct', 0) > 0:
-        lines.append(f"📐 Spread: {r['spread_pct']:.1f}%")
-    if r.get('ev_pct', 0) != 0:
-        lines.append(f"⚡ EV: {r['ev_pct']:+.2f}%")
-    lines += [
-        f"💧 Liq: {fu(r['liquidity'])}",
-        f"⏰ Sisa: {r.get('days_str','?')}",
-        f"🔍 Scan #{scan}",
-        f"",
-        f"⚠️ Paper trade dulu, pantau hasilnya!",
-    ]
-    await send_telegram(session, '\n'.join(lines))
-    log.info(f"TG SENT: {r['signal']} {r['question'][:50]}")
-
-# ══════════════════════════════════════════════════════════════════
-# DATABASE
-# ══════════════════════════════════════════════════════════════════
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('''CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ts TEXT, market_id TEXT, question TEXT,
-        signal TEXT, action TEXT, outcome TEXT,
-        entry_price REAL, ev_pct REAL, spread_pct REAL,
-        arb_profit REAL, liquidity REAL, days REAL,
-        amount REAL, status TEXT DEFAULT "OPEN",
-        pnl REAL, resolved_ts TEXT, correct INTEGER
-    )''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS scan_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ts TEXT, fetched INTEGER, valid INTEGER, ms INTEGER
-    )''')
-    conn.commit()
-    conn.close()
-
-def db_log_trade(r: dict, amount: float = 0):
-    try:
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute('''INSERT INTO trades
-            (ts,market_id,question,signal,action,outcome,entry_price,
-             ev_pct,spread_pct,arb_profit,liquidity,days,amount,status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,"OPEN")''', (
-            ts, r.get('id',''), r.get('question','')[:200],
-            r.get('signal',''), r.get('action',''), r.get('entry_outcome',''),
-            r.get('entry_price',0), r.get('ev_pct',0), r.get('spread_pct',0),
-            r.get('arb_profit',0), r.get('liquidity',0), r.get('days'),
-            amount,
-        ))
-        conn.commit()
-        conn.close()
-
-        # CSV
-        row = {
-            'ts': ts, 'signal': r.get('signal',''),
-            'question': r.get('question','')[:80],
-            'action': r.get('action',''),
-            'entry': r.get('entry_price',0),
-            'ev%': round(r.get('ev_pct',0),2),
-            'spread%': round(r.get('spread_pct',0),2),
-            'arb%': round(r.get('arb_profit',0),2),
-            'liq': round(r.get('liquidity',0),0),
-            'days': round(r.get('days',0) or 0, 1),
-            'amount': amount, 'status': 'OPEN',
-        }
-        exists = os.path.exists(CSV_PATH)
-        with open(CSV_PATH, 'a', newline='') as f:
-            w = csv.DictWriter(f, fieldnames=row.keys())
-            if not exists: w.writeheader()
-            w.writerow(row)
-    except Exception as e:
-        log.error(f'DB error: {e}')
-
-def db_get_stats() -> dict:
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur  = conn.cursor()
-        cur.execute('SELECT COUNT(*) FROM trades')
-        total = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED'")
-        closed = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED' AND pnl>0")
-        wins = cur.fetchone()[0]
-        cur.execute("SELECT COALESCE(SUM(pnl),0) FROM trades WHERE status='CLOSED'")
-        pnl = cur.fetchone()[0]
-        cur.execute("SELECT COALESCE(SUM(amount),0) FROM trades WHERE status='OPEN'")
-        exposure = cur.fetchone()[0]
-        cur.execute('''SELECT ts,signal,substr(question,1,30),entry_price,amount,status,pnl
-                       FROM trades ORDER BY id DESC LIMIT 5''')
-        recent = cur.fetchall()
-        conn.close()
-        wr = (wins/closed*100) if closed>0 else 0
-        return {
-            'total':total,'closed':closed,'open':total-closed,
-            'wins':wins,'losses':closed-wins,'win_rate':wr,
-            'pnl':pnl,'exposure':exposure,'recent':recent
-        }
-    except:
-        return {'total':0,'closed':0,'open':0,'wins':0,'losses':0,
-                'win_rate':0,'pnl':0,'exposure':0,'recent':[]}
+async def tg_close(session, pos: dict, exit_price: float,
+                   pnl: float, reason: str):
+    emoji = '✅' if pnl > 0 else '❌'
+    text  = (
+        f"{emoji} <b>CLOSE POSISI #{pos['id']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 {pos['question'][:50]}\n\n"
+        f"🎯 Outcome: <b>{pos['outcome']}</b>\n"
+        f"📥 Entry: {pos['entry_price']:.4f}\n"
+        f"📤 Exit: <b>{exit_price:.4f}</b>\n"
+        f"💰 P&L: <b>${pnl:+.3f}</b>\n"
+        f"📝 Alasan: {reason}\n"
+        f"{'🎉 PROFIT!' if pnl > 0 else '⚠️ Loss - cut rugi tepat waktu'}"
+    )
+    await tg(session, text)
 
 # ══════════════════════════════════════════════════════════════════
 # API
@@ -281,31 +369,31 @@ async def fetch_markets(session) -> List[dict]:
     pages = await asyncio.gather(*tasks)
     out = []
     for p in pages:
-        if isinstance(p, list) and p:
-            out.extend(p)
+        if isinstance(p, list) and p: out.extend(p)
     return out
 
-async def fetch_orderbook(session, token_id: str) -> Optional[dict]:
-    """Fetch orderbook untuk dapat best bid dan best ask"""
-    return await api_get(session, f"{CFG['CLOB_API']}/book",
-                         {'token_id': token_id})
+async def fetch_price(session, token_id: str) -> Optional[float]:
+    """Fetch harga terbaru untuk token yang kita pegang"""
+    if not token_id: return None
+    try:
+        data = await api_get(session, f"{CFG['CLOB_API']}/midpoints",
+                             [('token_id', token_id)])
+        if isinstance(data, list) and data:
+            return float(data[0].get('mid', 0)) or None
+    except: pass
+    # Fallback: coba dari Gamma
+    return None
 
 async def fetch_clob_batch(session, token_ids: List[str]) -> Dict[str, dict]:
-    """Fetch midpoint dan spread untuk banyak token sekaligus"""
     if not token_ids: return {}
     result = {}
     batches = [token_ids[i:i+40] for i in range(0, min(len(token_ids),200), 40)]
-
     mid_tasks = [api_get(session, f"{CFG['CLOB_API']}/midpoints",
                          [('token_id',t) for t in b]) for b in batches]
     spd_tasks = [api_get(session, f"{CFG['CLOB_API']}/spreads",
                          [('token_id',t) for t in b]) for b in batches]
-
     mids_all, spds_all = await asyncio.gather(
-        asyncio.gather(*mid_tasks),
-        asyncio.gather(*spd_tasks)
-    )
-
+        asyncio.gather(*mid_tasks), asyncio.gather(*spd_tasks))
     mid_map, spd_map = {}, {}
     for page in mids_all:
         if isinstance(page, list):
@@ -319,15 +407,12 @@ async def fetch_clob_batch(session, token_ids: List[str]) -> Dict[str, dict]:
                 tid = str(x.get('token_id',''))
                 try: spd_map[tid] = float(x.get('spread',0))
                 except: pass
-
     for tid, mid in mid_map.items():
         if mid > 0:
             spd = spd_map.get(tid, 0.04)
             result[tid] = {
-                'mid'   : mid,
-                'bid'   : max(0.001, mid - spd/2),
-                'ask'   : min(0.999, mid + spd/2),
-                'spread': spd,
+                'mid': mid, 'bid': max(0.001, mid-spd/2),
+                'ask': min(0.999, mid+spd/2), 'spread': spd,
             }
     return result
 
@@ -347,7 +432,7 @@ def parse_prices(m: dict) -> List[float]:
         if raw:
             try:
                 vals = [max(0.001, min(0.999, float(str(x)))) for x in raw]
-                if len(vals) >= 2 and all(v>0 for v in vals): return vals
+                if len(vals)>=2: return vals
             except: pass
     return []
 
@@ -368,284 +453,392 @@ def parse_days(m: dict) -> Optional[float]:
     return None
 
 # ══════════════════════════════════════════════════════════════════
-# CORE ANALISIS — 5 JENIS MISPRICING
+# ANALISIS SINYAL
 # ══════════════════════════════════════════════════════════════════
-def analyze(names, gamma_px, clob, liquidity, volume, days, prev_px) -> Optional[dict]:
+def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
     N = len(gamma_px)
     if N < 2: return None
 
-    # ── 1. ARBITRAGE: YES_ask + NO_ask < 1.0 ────────────────────
-    # Beli semua outcome = dijamin dapat $1
-    # Profit = 1.0 - total yang dibayar
-    ask_prices = []
-    for i in range(N):
-        if i < len(clob) and clob[i]:
-            ask_prices.append(clob[i]['ask'])
-        else:
-            ask_prices.append(gamma_px[i])
+    # Ask prices dari CLOB (lebih akurat)
+    ask_prices = [
+        clob[i]['ask'] if i < len(clob) and clob[i] else gamma_px[i]
+        for i in range(N)
+    ]
+    ask_sum = sum(ask_prices)
 
-    ask_sum    = sum(ask_prices)
-    is_arb     = ask_sum < CFG['ARB_THRESHOLD']
+    # Arbitrage check
+    is_arb     = ask_sum < 0.995
     arb_profit = max(0.0, (1.0 - ask_sum) * 100)
 
-    # ── 2. SPREAD ANALYSIS ───────────────────────────────────────
-    # Spread lebar = pasar tidak efisien = ada celah
+    # Spread
     spreads = []
     for i in range(N):
         if i < len(clob) and clob[i] and clob[i]['mid'] > 0:
-            spd_pct = clob[i]['spread'] / clob[i]['mid'] * 100
-            spreads.append(spd_pct)
+            spreads.append(clob[i]['spread'] / clob[i]['mid'] * 100)
         else:
             spreads.append(0.0)
-
     max_spread = max(spreads) if spreads else 0.0
-    best_spread_i = spreads.index(max_spread) if spreads else 0
 
-    # ── 3. PRICE IMBALANCE ───────────────────────────────────────
-    # Selisih bid vs ask jauh dari tengah
-    # Jika bid lebih tinggi dari yang seharusnya = ada tekanan beli
-    imbalance_scores = []
-    for i in range(N):
-        if i < len(clob) and clob[i]:
-            mid = clob[i]['mid']
-            bid = clob[i]['bid']
-            ask = clob[i]['ask']
-            # Imbalance: bid lebih dekat ke ask = tekanan beli kuat
-            if ask > bid:
-                imb = (bid - (bid+ask)/2) / ((ask-bid)/2) if (ask-bid) > 0 else 0
-                imbalance_scores.append(imb)
-            else:
-                imbalance_scores.append(0)
-        else:
-            imbalance_scores.append(0)
+    # Momentum
+    mom_pct, mom_dir = 0.0, ''
+    if prev_px and len(prev_px)==N and prev_px[0]>0:
+        chg = (gamma_px[0]-prev_px[0])/prev_px[0]*100
+        mom_pct = chg
+        if chg>=5: mom_dir = f'↑{chg:.1f}%'
+        elif chg<=-5: mom_dir = f'↓{abs(chg):.1f}%'
 
-    # ── 4. NEAR-RESOLUTION ───────────────────────────────────────
-    near_res   = False
-    near_note  = ''
-    near_bonus = 0.0
-    if days is not None and 0 <= days <= 1:
-        # Harga masih jauh dari 0 atau 1 (belum resolved)
+    # Near-resolution
+    near_res, near_note, near_bonus = False, '', 0.0
+    if days is not None and 0<=days<=1:
         for p in gamma_px:
-            if 0.05 < p < 0.95:
-                near_res   = True
-                near_bonus = 30.0
-                if days < 0.25:
-                    near_note = '⏰ CLOSES <6H!'
-                elif days < 0.5:
-                    near_note = '⏰ CLOSES <12H'
-                else:
-                    near_note = '⏰ CLOSES <24H'
+            if 0.05<p<0.95:
+                near_res=True; near_bonus=25.0
+                if days<0.021: near_note='⏰ <30 MENIT!'
+                elif days<0.25: near_note='⏰ <6 JAM'
+                elif days<0.5: near_note='⏰ <12 JAM'
+                else: near_note='⏰ <24 JAM'
                 break
 
-    # ── 5. VOLUME SPIKE ──────────────────────────────────────────
-    vol_spike = False
-    vol_note  = ''
-    vol_bonus = 0.0
-    if liquidity > 0 and volume > liquidity * CFG['VOL_SPIKE_RATIO']:
-        vol_spike = True
-        ratio     = volume / liquidity
-        vol_note  = f'🔊 VOL {ratio:.0f}x LIKUIDITAS!'
-        vol_bonus = min(25.0, ratio * 3)
+    # Volume spike
+    vol_spike, vol_note, vol_bonus = False, '', 0.0
+    if liq>0 and vol>liq*CFG['VOL_SPIKE_RATIO']:
+        vol_spike=True
+        ratio=vol/liq
+        vol_note=f'🔊 VOL {ratio:.0f}x'
+        vol_bonus=min(25.0, ratio*3)
 
-    # ── MOMENTUM ─────────────────────────────────────────────────
-    momentum_pct = 0.0
-    momentum_dir = ''
-    if prev_px and len(prev_px) == N and prev_px[0] > 0:
-        chg = (gamma_px[0] - prev_px[0]) / prev_px[0] * 100
-        momentum_pct = chg
-        if   chg >=  5: momentum_dir = f'↑{chg:.1f}%'
-        elif chg <= -5: momentum_dir = f'↓{abs(chg):.1f}%'
-
-    # ── PILIH ENTRY TERBAIK ──────────────────────────────────────
-    # Prioritas: Arbitrage > Spread > Near-res > Volume
-
+    # Entry selection
     if is_arb:
-        # Beli semua outcome
-        entry_i   = 0
-        entry_px  = ask_prices[0]
-        ev_pct    = arb_profit
-        method    = 'ARBITRAGE'
-    elif max_spread > CFG['MIN_SPREAD'] * 100:
-        # Entry di sisi dengan spread terlebar = paling tidak efisien
-        entry_i   = best_spread_i
-        entry_px  = ask_prices[entry_i] if entry_i < len(ask_prices) else gamma_px[entry_i]
-        # EV dari spread: beli di ask, jual di mid
-        if entry_i < len(clob) and clob[entry_i]:
-            mid      = clob[entry_i]['mid']
-            ev_pct   = (mid / entry_px - 1) * 100 if entry_px > 0 else 0
-        else:
-            ev_pct   = max_spread / 2
-        method    = 'SPREAD'
+        entry_i=0; entry_px=ask_prices[0]; ev_pct=arb_profit; method='ARB'
     else:
-        # Default: sisi yang paling murah vs gamma
-        entry_i   = 0
-        entry_px  = ask_prices[0]
-        ev_pct    = 0.0
-        method    = 'MONITOR'
+        entry_i=0; entry_px=ask_prices[0]; ev_pct=0.0; method='SIGNAL'
 
-    entry_name = names[entry_i] if entry_i < len(names) else names[0]
-    entry_fv   = gamma_px[entry_i]
+    entry_name = names[entry_i] if entry_i<len(names) else names[0]
 
-    # ── KELLY ────────────────────────────────────────────────────
+    # Kelly
     kelly = 0.0
-    if ev_pct > 0 and entry_px > 0.001 and entry_px < 0.999:
-        # Estimasi fair prob dari EV
-        fair_p = entry_px * (1 + ev_pct/100)
-        fair_p = min(0.999, max(0.001, fair_p))
-        b = (1/entry_px) - 1
-        if b > 0:
-            k = (b*fair_p - (1-fair_p)) / b
-            kelly = max(0.0, k * CFG['KELLY_FRACTION'])
+    if ev_pct>0 and 0.001<entry_px<0.999:
+        fair_p = min(0.999, entry_px*(1+ev_pct/100))
+        b = (1/entry_px)-1
+        if b>0:
+            k = (b*fair_p-(1-fair_p))/b
+            kelly = max(0.0, k*CFG['KELLY_FRACTION'])
 
-    # ── SCORE ────────────────────────────────────────────────────
-    arb_s  = 100 if is_arb else 0
-    ev_s   = min(60, max(0, ev_pct * 6))
-    spd_s  = min(30, max(0, max_spread * 3))
-    liq_s  = min(15, math.log10(max(liquidity,1)) * 4)
-    vol_s  = min(15, math.log10(max(volume,1)) * 4)
-    mom_s  = min(15, abs(momentum_pct) * 1.5)
+    # Score
+    score = (
+        (100 if is_arb else 0) +
+        min(60, abs(mom_pct)*4) +
+        min(25, max_spread*2.5) +
+        min(15, math.log10(max(liq,1))*4) +
+        min(15, math.log10(max(vol,1))*4) +
+        near_bonus + vol_bonus
+    )
 
-    score = arb_s + ev_s + spd_s + liq_s + vol_s + mom_s + near_bonus + vol_bonus
-
-    # ── SIGNAL ───────────────────────────────────────────────────
-    # Combo signals — kombinasi faktor yang lebih realistis
-    # ARBITRAGE: beli semua outcome, profit dijamin
+    # Signal logic
+    is_strong_signal = False
     if is_arb and arb_profit > 0.2:
-        signal, action, color = '💰 ARBITRAGE', f'BELI {" + ".join(names[:2])}', GG
-
-    # STRONG BUY: momentum kuat + pasar mau tutup + volume spike
-    elif (abs(momentum_pct) >= 10 and near_res and vol_spike):
-        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
-        signal, action, color = '🔥 STRONG BUY', f'BUY {direction[:12].upper()}', GG
-
-    # BUY: momentum kuat + salah satu faktor lain
-    elif (abs(momentum_pct) >= 10 and near_res):
-        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
-        signal, action, color = '✅ BUY', f'BUY {direction[:12].upper()}', G
-
-    elif (abs(momentum_pct) >= 10 and vol_spike):
-        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
-        signal, action, color = '✅ BUY', f'BUY {direction[:12].upper()}', G
-
-    elif (abs(momentum_pct) >= 15):
-        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
-        signal, action, color = '✅ BUY', f'BUY {direction[:12].upper()}', G
-
-    # EDGE: momentum sedang + near-res
-    elif (abs(momentum_pct) >= 5 and near_res):
-        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
-        signal, action, color = '⚡ EDGE', f'BUY {direction[:12].upper()}', YY
-
-    # EDGE: volume spike + near-res
-    elif (vol_spike and near_res):
-        signal, action, color = '⚡ EDGE', f'WATCH {entry_name[:10].upper()}', YY
-
-    # Vol spike saja
-    elif vol_spike and volume > liquidity * 5:
-        signal, action, color = '🔊 VOL SPIKE', f'WATCH {entry_name[:10].upper()}', Y
-
-    # Near-res saja
-    elif near_res and days is not None and days < 0.25:
-        signal, action, color = '⏰ NEAR-RES', f'WATCH {entry_name[:10].upper()}', Y
-
-    # Momentum saja
-    elif abs(momentum_pct) >= 5:
-        direction = names[0] if momentum_pct > 0 else (names[1] if N>1 else names[0])
-        signal, action, color = '📈 MOMENTUM', f'WATCH {direction[:10].upper()}', C
-
-    elif near_res:
-        signal, action, color = '⏰ NEAR-RES', 'MONITOR', Y
-
+        signal='💰 ARBITRAGE'; action=f'BELI {"+".join(names[:2])}'; color=GG
+        is_strong_signal=True
+    elif abs(mom_pct)>=15 and near_res and vol_spike:
+        d = names[0] if mom_pct>0 else (names[1] if N>1 else names[0])
+        signal='🔥 STRONG BUY'; action=f'BUY {d[:12].upper()}'; color=GG
+        entry_name=d; is_strong_signal=True
+    elif abs(mom_pct)>=10 and near_res:
+        d = names[0] if mom_pct>0 else (names[1] if N>1 else names[0])
+        signal='🔥 STRONG BUY'; action=f'BUY {d[:12].upper()}'; color=GG
+        entry_name=d; is_strong_signal=True
+    elif abs(mom_pct)>=15:
+        d = names[0] if mom_pct>0 else (names[1] if N>1 else names[0])
+        signal='✅ BUY'; action=f'BUY {d[:12].upper()}'; color=G
+        entry_name=d; is_strong_signal=True
+    elif abs(mom_pct)>=10 and vol_spike:
+        d = names[0] if mom_pct>0 else (names[1] if N>1 else names[0])
+        signal='✅ BUY'; action=f'BUY {d[:12].upper()}'; color=G
+        entry_name=d; is_strong_signal=True
+    elif vol_spike and near_res:
+        signal='⚡ EDGE'; action=f'WATCH {entry_name[:10].upper()}'; color=YY
+        is_strong_signal=True
+    elif abs(mom_pct)>=5 and near_res:
+        d = names[0] if mom_pct>0 else (names[1] if N>1 else names[0])
+        signal='⚡ EDGE'; action=f'BUY {d[:10].upper()}'; color=YY
+        entry_name=d
+    elif abs(mom_pct)>=5:
+        d = names[0] if mom_pct>0 else (names[1] if N>1 else names[0])
+        signal='📈 MOMENTUM'; action=f'WATCH {d[:10].upper()}'; color=C
+        entry_name=d
+    elif near_res and days is not None and days<0.25:
+        signal='⏰ NEAR-RES'; action='WATCH'; color=Y
     else:
-        signal, action, color = '➖ MONITOR', 'MONITOR', W
+        signal='➖ MONITOR'; action='MONITOR'; color=W
+
+    # Update entry price based on selected outcome
+    entry_idx = next((i for i,n in enumerate(names) if n==entry_name), 0)
+    entry_px  = ask_prices[entry_idx] if entry_idx<len(ask_prices) else ask_prices[0]
 
     return {
-        'signal': signal, 'action': action, 'color': color, 'method': method,
-        'names': names, 'gamma_px': gamma_px, 'ask_prices': ask_prices,
-        'ask_sum': ask_sum, 'is_arb': is_arb, 'arb_profit': arb_profit,
-        'entry_outcome': entry_name, 'entry_price': entry_px, 'entry_fv': entry_fv,
-        'spread_pct': max_spread, 'spreads': spreads,
-        'ev_pct': ev_pct, 'kelly': kelly, 'kelly_usd': kelly * CFG['BANKROLL'],
-        'momentum_pct': momentum_pct, 'momentum_dir': momentum_dir,
-        'near_res': near_res, 'near_note': near_note,
-        'vol_spike': vol_spike, 'vol_note': vol_note,
-        'score': score, 'clob': clob,
+        'signal':signal,'action':action,'color':color,'method':method,
+        'names':names,'gamma_px':gamma_px,'ask_prices':ask_prices,
+        'is_arb':is_arb,'arb_profit':arb_profit,
+        'entry_outcome':entry_name,'entry_price':entry_px,
+        'entry_token_idx':entry_idx,
+        'ev_pct':ev_pct,'kelly':kelly,'kelly_usd':kelly*CFG['BANKROLL'],
+        'spread_pct':max_spread,'spreads':spreads,
+        'momentum_pct':mom_pct,'momentum_dir':mom_dir,
+        'near_res':near_res,'near_note':near_note,
+        'vol_spike':vol_spike,'vol_note':vol_note,
+        'score':score,'is_strong_signal':is_strong_signal,
+        'clob':clob,
     }
 
 def process(m: dict, history: dict, clob_map: dict) -> Optional[dict]:
     q = (m.get('question') or '').strip()
     if not q: return None
-
-    liq  = float(m.get('liquidity') or 0)
-    vol  = float(m.get('volume24hr') or m.get('volume') or 0)
+    liq    = float(m.get('liquidity') or 0)
+    vol    = float(m.get('volume24hr') or m.get('volume') or 0)
     names  = parse_outcomes(m)
     prices = parse_prices(m)
     tids   = parse_token_ids(m)
     days   = parse_days(m)
-
-    if len(prices) < 2 or len(names) < 2: return None
-    if days is not None and days < -1: return None
-
-    n = min(len(names), len(prices))
-    names, prices = names[:n], prices[:n]
-
-    clob = [clob_map.get(tids[i]) if i < len(tids) else None for i in range(n)]
-
-    mid = str(m.get('id', q[:40]))
-    res = analyze(names, prices, clob, liq, vol, days, history.get(mid, []))
+    if len(prices)<2 or len(names)<2: return None
+    if days is not None and days<-1: return None
+    n = min(len(names),len(prices))
+    names,prices = names[:n],prices[:n]
+    clob = [clob_map.get(tids[i]) if i<len(tids) else None for i in range(n)]
+    mid  = str(m.get('id',q[:40]))
+    res  = analyze(names,prices,clob,liq,vol,days,history.get(mid,[]))
     if not res: return None
-
-    # Format days string
-    days_str = fd(days).replace(Z,'').replace(Y,'').replace(R,'').replace(RR,'').replace(W,'')
-
+    entry_idx = res.get('entry_token_idx',0)
+    entry_tid = tids[entry_idx] if entry_idx<len(tids) else ''
     return {
-        'id': mid, 'question': q,
-        'category': str(m.get('category') or m.get('groupItemTitle') or 'General')[:20],
-        'liquidity': liq, 'volume_24h': vol, 'days': days, 'days_str': days_str,
-        'token_ids': tids,
+        'id':mid,'question':q,
+        'condition_id':m.get('conditionId',''),
+        'category':str(m.get('category') or m.get('groupItemTitle') or 'General')[:20],
+        'liquidity':liq,'volume_24h':vol,'days':days,
+        'token_ids':tids,'entry_token_id':entry_tid,
+        'end_date':m.get('endDateIso',m.get('endDate','')),
         **res,
     }
+
+# ══════════════════════════════════════════════════════════════════
+# AUTO-CLOSE ENGINE — Ini yang paling penting!
+# ══════════════════════════════════════════════════════════════════
+class PositionManager:
+    def __init__(self):
+        self.open_positions: List[dict] = []
+
+    async def refresh(self):
+        """Load posisi open dari database"""
+        self.open_positions = db_get_open_positions()
+
+    @property
+    def count(self) -> int:
+        return len(self.open_positions)
+
+    @property
+    def total_exposure(self) -> float:
+        return sum(p['amount_usd'] for p in self.open_positions)
+
+    def can_open(self) -> Tuple[bool, str]:
+        """Cek apakah boleh buka posisi baru"""
+        if self.count >= CFG['MAX_POSITIONS']:
+            return False, f"Max {CFG['MAX_POSITIONS']} posisi sudah tercapai"
+        if self.total_exposure >= CFG['MAX_EXPOSURE']:
+            return False, f"Max exposure ${CFG['MAX_EXPOSURE']} sudah tercapai"
+        return True, "OK"
+
+    async def check_and_close(self, session) -> List[dict]:
+        """
+        CEK SEMUA POSISI OPEN — Tutup yang memenuhi syarat:
+        1. Take Profit: harga naik 50%
+        2. Stop Loss: harga turun 40%
+        3. Time Exit: sisa < 30 menit
+        4. Force Exit: sisa < 5 menit
+        """
+        closed_list = []
+
+        for pos in self.open_positions:
+            entry_price = pos['entry_price']
+            token_id    = pos.get('token_id', '')
+            end_date    = pos.get('end_date', '')
+
+            # Hitung sisa waktu
+            days_left = None
+            if end_date:
+                try:
+                    dt = datetime.fromisoformat(
+                        str(end_date).replace('Z','+00:00'))
+                    days_left = (dt - datetime.now(timezone.utc)
+                                 ).total_seconds() / 86400
+                except: pass
+
+            # Fetch harga terbaru
+            current_price = await fetch_price(session, token_id)
+            if current_price is None:
+                current_price = entry_price  # fallback
+
+            # Hitung perubahan harga
+            if entry_price > 0:
+                price_change_pct = (current_price - entry_price) / entry_price * 100
+            else:
+                price_change_pct = 0
+
+            # ── TENTUKAN APAKAH PERLU CLOSE ──────────────────────
+            should_close = False
+            close_reason = ''
+            exit_price   = current_price
+
+            # 1. FORCE EXIT — sisa < 5 menit (prioritas tertinggi)
+            if (days_left is not None and
+                    days_left < CFG['FORCE_EXIT_MINUTES'] / 1440):
+                should_close = True
+                close_reason = f'⏰ FORCE EXIT (<{CFG["FORCE_EXIT_MINUTES"]}m)'
+
+            # 2. TIME EXIT — sisa < 30 menit
+            elif (days_left is not None and
+                  days_left < CFG['TIME_EXIT_MINUTES'] / 1440):
+                should_close = True
+                close_reason = f'⏰ TIME EXIT (<{CFG["TIME_EXIT_MINUTES"]}m)'
+
+            # 3. TAKE PROFIT — harga naik 50%
+            elif price_change_pct >= CFG['TAKE_PROFIT_PCT']:
+                should_close = True
+                close_reason = f'✅ TAKE PROFIT (+{price_change_pct:.1f}%)'
+
+            # 4. STOP LOSS — harga turun 40%
+            elif price_change_pct <= -CFG['STOP_LOSS_PCT']:
+                should_close = True
+                close_reason = f'❌ STOP LOSS ({price_change_pct:.1f}%)'
+
+            if should_close:
+                # Hitung P&L
+                shares  = pos.get('shares', pos['amount_usd'] / entry_price)
+                pnl_usd = db_close_position(
+                    pos['id'], exit_price, close_reason)
+
+                # Notif Telegram
+                await tg_close(session, pos, exit_price, pnl_usd, close_reason)
+
+                closed_list.append({
+                    'pos': pos,
+                    'exit_price': exit_price,
+                    'pnl': pnl_usd,
+                    'reason': close_reason,
+                    'price_change': price_change_pct,
+                })
+
+                log.info(f"AUTO-CLOSE #{pos['id']}: {close_reason} | "
+                         f"P&L ${pnl_usd:+.3f}")
+
+        # Refresh list setelah close
+        if closed_list:
+            await self.refresh()
+
+        return closed_list
+
+    async def open_position(self, session, r: dict) -> Optional[int]:
+        """Buka posisi baru"""
+        can, reason = self.can_open()
+        if not can:
+            log.info(f"SKIP OPEN: {reason}")
+            return None
+
+        amount = CFG['TRADE_PER_SIGNAL']
+        entry  = r['entry_price']
+        shares = amount / entry if entry > 0 else 0
+
+        pos_id = db_open_position(r, amount, shares, order_id='PAPER')
+        await tg_open(session, r, pos_id, amount)
+        await self.refresh()
+        return pos_id
 
 # ══════════════════════════════════════════════════════════════════
 # DISPLAY
 # ══════════════════════════════════════════════════════════════════
 def banner():
-    print(CC + WW + '''
+    at = f'{GG}ON{Z}' if AUTO_TRADE and PRIVATE_KEY else f'{Y}PAPER{Z}'
+    print(CC + WW + f'''
 ╔══════════════════════════════════════════════════════════════════════╗
-║  POLYMARKET SCANNER v9.0 — REAL MISPRICING DETECTOR                ║
-║  Arbitrage · Spread · Near-Resolution · Volume Spike · Momentum     ║
-╚══════════════════════════════════════════════════════════════════════╝''')
+║  POLYMARKET FULL AUTO BOT v10.0                                    ║
+║  Auto Open · Auto Close · Max 10 Posisi · $1/entry · $10 Total    ║
+╚══════════════════════════════════════════════════════════════════════╝
+  Mode: {at}  TP:{G}+{CFG["TAKE_PROFIT_PCT"]:.0f}%{Z}  SL:{R}-{CFG["STOP_LOSS_PCT"]:.0f}%{Z}  TimeExit:{Y}<{CFG["TIME_EXIT_MINUTES"]}m{Z}''')
 
-def display_stats(st: dict):
+def display_positions(positions: List[dict]):
+    """Tampilkan posisi yang sedang terbuka"""
+    if not positions:
+        print(f'\n  {W}Tidak ada posisi terbuka.{Z}')
+        return
+
+    print(f'\n{WW}  📂 POSISI TERBUKA ({len(positions)}/{CFG["MAX_POSITIONS"]})\n')
+    rows = []
+    for p in positions:
+        entry = p['entry_price']
+        rows.append([
+            f'{C}#{p["id"]}{Z}',
+            p['signal'][:14],
+            p['question'][:25]+'...' if len(p['question'])>25 else p['question'],
+            p['outcome'][:8],
+            f'{entry:.3f}',
+            p['open_ts'][11:16],
+            fd(None),  # days not available here
+        ])
+    print(tabulate(rows,
+        headers=['#','Signal','Pasar','Outcome','Entry','Jam','Sisa'],
+        tablefmt='simple'))
+
+def display_stats(st: dict, pm: 'PositionManager'):
     wr_c  = GG if st['win_rate']>=55 else (Y if st['win_rate']>=45 else R)
     pnl_c = G if st['pnl']>0 else (Y if st['pnl']==0 else R)
-    print(f'\n{WW}  ┌─ JOURNAL ────────────────────────────────────────────────────────┐')
+    exp_c = RR if pm.total_exposure>=CFG['MAX_EXPOSURE'] else (Y if pm.total_exposure>=5 else G)
+
+    print(f'\n{WW}  ┌─ JOURNAL & P&L ──────────────────────────────────────────────────┐')
     print(
         f'  │  Total:{W}{st["total"]}{Z}  '
-        f'Open:{C}{st["open"]}{Z}  '
+        f'Open:{C}{pm.count}{Z}/{CFG["MAX_POSITIONS"]}  '
         f'Closed:{W}{st["closed"]}{Z}  '
         f'Win:{G}{st["wins"]}{Z}  '
         f'Loss:{R}{st["losses"]}{Z}  '
-        f'WinRate:{wr_c}{st["win_rate"]:.1f}%{Z}  '
-        f'P&L:{pnl_c}${st["pnl"]:+.2f}{Z}  '
-        f'Exposure:{Y}${st["exposure"]:.2f}{Z}'
+        f'WR:{wr_c}{st["win_rate"]:.1f}%{Z}  '
+        f'P&L:{pnl_c}${st["pnl"]:+.2f}{Z}'
+    )
+    print(
+        f'  │  Exposure:{exp_c}${pm.total_exposure:.2f}{Z}/${CFG["MAX_EXPOSURE"]:.0f}  '
+        f'Slot tersisa:{G}{CFG["MAX_POSITIONS"]-pm.count}{Z}  '
+        f'TP:{G}+{CFG["TAKE_PROFIT_PCT"]:.0f}%{Z}  '
+        f'SL:{R}-{CFG["STOP_LOSS_PCT"]:.0f}%{Z}  '
+        f'TimeExit:{Y}<{CFG["TIME_EXIT_MINUTES"]}m{Z}'
     )
     print(f'{WW}  └──────────────────────────────────────────────────────────────────┘{Z}')
 
     if st['recent']:
         rows = []
         for t in st['recent']:
-            ts,sig,q,ep,amt,status,pnl_v = t
-            pnl_s = f'{G}+${pnl_v:.2f}{Z}' if (pnl_v or 0)>0 else (f'{R}${pnl_v:.2f}{Z}' if pnl_v else f'{Y}open{Z}')
-            rows.append([ts[:16],sig[:14],q,f'{ep:.3f}',f'${amt:.2f}',status,pnl_s])
-        print(f'\n{WW}  Trade terbaru:{Z}')
-        print(tabulate(rows, headers=['Waktu','Signal','Pasar','Entry','Bet','Status','P&L'], tablefmt='simple'))
+            ts,sig,q,ep,amt,status,pnl_v,reason = t
+            if status=='OPEN':
+                st_str = f'{C}OPEN{Z}'
+                pnl_str = f'{Y}terbuka{Z}'
+            else:
+                st_str  = f'{G}WIN{Z}' if (pnl_v or 0)>0 else f'{R}LOSS{Z}'
+                pnl_str = f'{G}+${pnl_v:.3f}{Z}' if (pnl_v or 0)>0 else f'{R}${pnl_v:.3f}{Z}'
+            rows.append([
+                ts[11:16], sig[:13], q,
+                f'{ep:.3f}', f'${amt:.2f}',
+                st_str, pnl_str,
+                (reason or '')[:15]
+            ])
+        print(f'\n{WW}  Riwayat trade:{Z}')
+        print(tabulate(rows,
+            headers=['Jam','Signal','Pasar','Entry','Bet','Status','P&L','Alasan Close'],
+            tablefmt='simple'))
 
-def display(results, stats_scan, stats_j):
-    if CFG['CLEAR_SCREEN']: os.system('clear 2>/dev/null || cls 2>/dev/null || true')
+def display(results, stats_scan, stats_j, pm: 'PositionManager', closed_this_scan):
+    try:
+        if CFG['CLEAR_SCREEN']: os.system('clear 2>/dev/null || true')
+    except: pass
     banner()
-    sp  = SPIN[stats_scan['scans'] % len(SPIN)]
-    ts  = datetime.now().strftime('%H:%M:%S')
+
+    sp = SPIN[stats_scan['scans'] % len(SPIN)]
+    ts = datetime.now().strftime('%H:%M:%S')
     print(f'\n{C}{"═"*72}')
     print(
         f'  {sp} {W}Waktu:{Y}{ts}{Z}  '
@@ -653,151 +846,128 @@ def display(results, stats_scan, stats_j):
         f'{W}Pasar:{C}{stats_scan["fetched"]}{Z}  '
         f'{W}Valid:{G}{stats_scan["valid"]}{Z}  '
         f'{W}Durasi:{C}{stats_scan["ms"]}ms{Z}  '
-        f'{W}Alert:{GG}{stats_scan["alerts"]}{Z}'
+        f'{W}Close scan ini:{GG}{len(closed_this_scan)}{Z}'
     )
     print(f'{C}{"═"*72}')
 
-    display_stats(stats_j)
+    display_stats(stats_j, pm)
+    display_positions(pm.open_positions)
+
+    if closed_this_scan:
+        print(f'\n{WW}  🔔 BARU DITUTUP SCAN INI:\n')
+        for c in closed_this_scan:
+            pnl = c['pnl']
+            col = G if pnl>0 else R
+            print(f'  {col}#{c["pos"]["id"]} {c["reason"]} | '
+                  f'P&L: ${pnl:+.3f} | '
+                  f'{c["pos"]["question"][:40]}{Z}')
 
     if not results:
         print(f'\n{Y}  Menunggu data...\n')
         return
 
-    # Tabel
-    print(f'\n{WW}  TOP {len(results)} PELUANG — SCAN #{stats_scan["scans"]}\n')
+    # Tabel sinyal
+    can_open, reason = pm.can_open()
+    slot_color = G if can_open else R
+    print(f'\n{WW}  TOP {len(results)} SINYAL — '
+          f'Slot: {slot_color}{CFG["MAX_POSITIONS"]-pm.count} tersedia{Z}\n')
+
     rows = []
-    for rank, r in enumerate(results, 1):
+    for rank, r in enumerate(results,1):
         col = r['color']
-        q   = (r['question'][:30]+'..')if len(r['question'])>30 else r['question']
+        q   = (r['question'][:28]+'..')if len(r['question'])>28 else r['question']
         mo  = r['momentum_dir']
         mc  = G if '↑' in mo else (R if '↓' in mo else W)
-        rk  = f'{GG}★{rank}{Z}' if 'ARBITRAGE' in r['signal'] or 'STRONG' in r['signal'] else f'{col}{rank}{Z}'
-
+        can = f'{G}✓{Z}' if (r.get('is_strong_signal') and can_open) else f'{W}—{Z}'
         rows.append([
-            rk, f'{col}{r["signal"]}{Z}', q,
+            f'{col}{rank}{Z}',
+            f'{col}{r["signal"]}{Z}',
+            q,
             f'{col}{r["action"][:14]}{Z}',
             f'{r["entry_price"]:.3f}',
-            fp(r['ev_pct']),
-            f'{G}{r["spread_pct"]:.1f}%{Z}' if r['spread_pct']>3 else f'{W}{r["spread_pct"]:.1f}%{Z}',
-            f'{GG}{r["arb_profit"]:+.2f}%{Z}' if r['is_arb'] else f'{W}—{Z}',
+            fp(r['momentum_pct']),
+            fd(r['days']),
             f'{C}{r["score"]:.0f}{Z}',
             fu(r['liquidity']),
-            f'{G}${r["kelly_usd"]:.2f}{Z}',
-            fd(r['days']),
-            f'{mc}{mo}{Z}',
+            can,
         ])
 
     print(tabulate(rows,
-        headers=['#','Signal','Pasar','Action','Entry','EV%','Spread','Arb%','Skor','Liq','Kelly$','Sisa','Mom'],
+        headers=['#','Signal','Pasar','Action','Entry','Mom','Sisa','Skor','Liq','Entry?'],
         tablefmt='simple'))
 
-    # Detail top 5
-    print(f'\n{WW}  ━━━━━ DETAIL TOP 5 ━━━━━\n')
-    for r in results[:5]:
-        _card(r)
-
-    print(f'{C}{"─"*72}')
-    at_str = f'{GG}ON ${CFG["TRADE_PER_SIGNAL"]}/signal{Z}' if AUTO_TRADE else f'{Y}OFF{Z}'
+    print(f'\n{C}{"─"*72}')
     print(
-        f'  Bankroll:{G}${CFG["BANKROLL"]:.2f}{Z}  '
-        f'AutoTrade:{at_str}  '
-        f'Scan:{C}{CFG["SCAN_INTERVAL"]}s{Z}  '
+        f'  TP:{G}+{CFG["TAKE_PROFIT_PCT"]:.0f}%{Z}  '
+        f'SL:{R}-{CFG["STOP_LOSS_PCT"]:.0f}%{Z}  '
+        f'TimeExit:{Y}<{CFG["TIME_EXIT_MINUTES"]}m{Z}  '
+        f'ForceExit:{RR}<{CFG["FORCE_EXIT_MINUTES"]}m{Z}  '
         f'Journal:{C}{CSV_PATH}{Z}\n'
     )
 
-def _card(r: dict):
-    col = r['color']
-    print(f'  {col}{"━"*68}{Z}')
-    print(f'  {col}{r["signal"]}{Z}  {WW}{r["question"][:65]}{Z}')
-    print(
-        f'  {C}Liq:{Z}{fu(r["liquidity"])}  '
-        f'{C}Vol24h:{Z}{fu(r["volume_24h"])}  '
-        f'{C}Sisa:{Z}{fd(r["days"])}  '
-        f'{C}Method:{Z}{W}{r["method"]}{Z}'
-    )
-
-    # Outcome dengan harga gamma dan CLOB
-    for i,(name,gp) in enumerate(zip(r['names'],r['gamma_px'])):
-        is_e = name == r['entry_outcome']
-        c2   = GG if is_e else W
-        mark = ' ◄ ENTRY' if is_e else ''
-        cd   = r['clob'][i] if i < len(r.get('clob',[])) else None
-        ask  = r['ask_prices'][i] if i < len(r.get('ask_prices',[])) else gp
-        spd  = r['spreads'][i] if i < len(r.get('spreads',[])) else 0
-
-        clob_str = f' [CLOB ask:{ask:.3f} spread:{spd:.1f}%]' if cd else ''
-        print(f'    {c2}{name}: gamma={gp:.3f}{clob_str}{mark}{Z}')
-
-    print()
-    if r['is_arb']:
-        print(f'  {GG}  >>> 💰 ARBITRAGE: BELI SEMUA OUTCOME!{Z}')
-        print(f'  {GG}      Total ask = {r["ask_sum"]:.4f} < 1.0{Z}')
-        print(f'  {GG}      Profit dijamin: {r["arb_profit"]:+.2f}%{Z}')
-    else:
-        ev_c = GG if r['ev_pct']>=5 else (G if r['ev_pct']>0 else R)
-        print(
-            f'  {Y}  >>> {r["action"]}{Z}  '
-            f'@ {GG}{r["entry_price"]:.4f}{Z}  '
-            f'EV:{ev_c}{r["ev_pct"]:+.2f}%{Z}  '
-            f'Spread:{G}{r["spread_pct"]:.1f}%{Z}  '
-            f'Kelly:${G}{r["kelly_usd"]:.2f}{Z}'
-        )
-    for note in [r.get('near_note'), r.get('vol_note')]:
-        if note: print(f'  {Y}  ⚠  {note}{Z}')
-    if r['momentum_dir']:
-        mc = G if '↑' in r['momentum_dir'] else R
-        print(f'  {W}  Momentum: {mc}{r["momentum_dir"]}{Z}')
-    print()
-
 # ══════════════════════════════════════════════════════════════════
-# MAIN
+# MAIN LOOP
 # ══════════════════════════════════════════════════════════════════
 async def main():
-    os.system('clear')
+    try: os.system('clear')
+    except: pass
     init_db()
     banner()
-    print(f'\n  {Y}Inisialisasi scanner v9.0...{Z}')
-    print(f'  {C}Pasar:{Z} {CFG["MAX_PAGES"]*CFG["MARKETS_PER_PAGE"]}  {C}Interval:{Z} {CFG["SCAN_INTERVAL"]}s')
-    print(f'  {C}Bankroll:{Z} ${CFG["BANKROLL"]:.2f}  {C}AutoTrade:{Z} {"ON" if AUTO_TRADE else "OFF"}')
-    print(f'  {C}Telegram:{Z} {"Terhubung ✓" if TELEGRAM_TOKEN else "Tidak aktif"}')
-    print(f'  {C}Journal:{Z} {CSV_PATH}\n')
+
+    print(f'\n  {Y}Inisialisasi...{Z}')
+    print(f'  {C}Max posisi:{Z} {CFG["MAX_POSITIONS"]} posisi / ${CFG["MAX_EXPOSURE"]:.0f} total')
+    print(f'  {C}Per trade:{Z} ${CFG["TRADE_PER_SIGNAL"]:.2f}')
+    print(f'  {C}Take Profit:{Z} +{CFG["TAKE_PROFIT_PCT"]:.0f}%')
+    print(f'  {C}Stop Loss:{Z} -{CFG["STOP_LOSS_PCT"]:.0f}%')
+    print(f'  {C}Time Exit:{Z} < {CFG["TIME_EXIT_MINUTES"]} menit tersisa')
+    print(f'  {C}Force Exit:{Z} < {CFG["FORCE_EXIT_MINUTES"]} menit tersisa')
+    print(f'  {C}Mode:{Z} {"REAL TRADE" if AUTO_TRADE and PRIVATE_KEY else "PAPER TRADE"}')
+    print(f'  {C}Telegram:{Z} {"✓ Aktif" if TELEGRAM_TOKEN else "✗ Tidak aktif"}')
+    print(f'  {C}Journal:{Z} {CSV_PATH}')
     await asyncio.sleep(1)
 
-    history : Dict[str, list] = {}
-    scans   = 0
-    alerts  = 0
-    exposure= 0.0
-    already_traded = set()
+    history  : Dict[str, list] = {}
+    scans    = 0
+    pm       = PositionManager()
+    await pm.refresh()
+    already_opened = set()
 
-    conn = aiohttp.TCPConnector(limit=50, limit_per_host=15, ttl_dns_cache=300, ssl=False)
-    hdrs = {'User-Agent': 'Mozilla/5.0 PolyScanner/9.0', 'Accept': 'application/json'}
+    conn = aiohttp.TCPConnector(limit=50,limit_per_host=15,ttl_dns_cache=300,ssl=False)
+    hdrs = {'User-Agent':'Mozilla/5.0 PolyBot/10.0','Accept':'application/json'}
 
     async with aiohttp.ClientSession(connector=conn, headers=hdrs) as session:
-
-        # Test Telegram
         if TELEGRAM_TOKEN:
-            await send_telegram(session,
-                '🤖 <b>Polymarket Scanner v9.0 Online!</b>\n'
-                'Bot sedang scan 1500 pasar setiap 15 detik.\n'
-                'Notifikasi akan masuk saat ada sinyal kuat.')
+            mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
+            await tg(session,
+                f'🤖 <b>Polymarket Auto Bot v10.0 Online!</b>\n'
+                f'Mode: <b>{mode}</b>\n'
+                f'Max: {CFG["MAX_POSITIONS"]} posisi / ${CFG["MAX_EXPOSURE"]:.0f}\n'
+                f'TP: +{CFG["TAKE_PROFIT_PCT"]:.0f}% | '
+                f'SL: -{CFG["STOP_LOSS_PCT"]:.0f}% | '
+                f'TimeExit: <{CFG["TIME_EXIT_MINUTES"]}m')
 
         while True:
             t0 = time.time()
+            closed_this_scan = []
             try:
-                # Fetch markets
+                # ── 1. CHECK & CLOSE POSISI ──────────────────────
+                await pm.refresh()
+                if pm.open_positions:
+                    closed_this_scan = await pm.check_and_close(session)
+                    await pm.refresh()
+
+                # ── 2. FETCH MARKETS ─────────────────────────────
                 raw = await fetch_markets(session)
 
-                # Kumpulkan token IDs
                 all_tids = []
                 for m in raw:
                     tids = parse_token_ids(m)
                     all_tids.extend(tids[:2])
                 all_tids = list(dict.fromkeys(all_tids))
 
-                # Fetch CLOB data
                 clob_map = await fetch_clob_batch(session, all_tids)
 
-                # Process
+                # ── 3. PROCESS MARKETS ───────────────────────────
                 results  = []
                 new_hist : Dict[str, list] = {}
 
@@ -818,45 +988,60 @@ async def main():
                 top = results[:CFG['DISPLAY_TOP']]
 
                 scans += 1
-                ms     = int((time.time()-t0)*1000)
+                ms = int((time.time()-t0)*1000)
 
-                # Alert & journal untuk sinyal kuat
+                # ── 4. AUTO-OPEN POSISI BARU ─────────────────────
                 for r in top:
-                    is_strong = r['signal'] in ['💰 ARBITRAGE','🔥 STRONG BUY','✅ BUY','⚡ EDGE','🔊 VOL SPIKE']
-                    if is_strong:
-                        alerts += 1
-                        await tg_notify(session, r, scans)
-                        # Log ke journal (paper trade, amount=0)
-                        if r['id'] not in already_traded:
-                            db_log_trade(r, amount=0)
-                            already_traded.add(r['id'])
-                            log.info(f"SIGNAL: {r['signal']} | {r['question'][:50]}")
+                    if not r.get('is_strong_signal'): continue
+                    if r['id'] in already_opened: continue
+                    if r['liquidity'] < CFG['MIN_LIQUIDITY']: continue
 
-                # Log scan stats
+                    # Skip pasar yang sudah mau habis sangat cepat
+                    if r['days'] is not None and r['days'] < 0.021:
+                        continue  # < 30 menit, terlalu riskan
+
+                    can, reason = pm.can_open()
+                    if not can: break
+
+                    pos_id = await pm.open_position(session, r)
+                    if pos_id:
+                        already_opened.add(r['id'])
+                        log.info(f"OPENED #{pos_id}: {r['signal']} "
+                                 f"{r['entry_outcome']} @ {r['entry_price']:.3f}")
+                    break  # Buka 1 posisi per scan
+
+                # ── 5. LOG SCAN ──────────────────────────────────
                 try:
                     conn2 = sqlite3.connect(DB_PATH)
                     conn2.execute(
-                        'INSERT INTO scan_log (ts,fetched,valid,ms) VALUES (?,?,?,?)',
-                        (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), len(raw), len(results), ms)
+                        'INSERT INTO scan_log (ts,fetched,valid,open_pos,ms) VALUES (?,?,?,?,?)',
+                        (datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                         len(raw), len(results), pm.count, ms)
                     )
-                    conn2.commit()
-                    conn2.close()
+                    conn2.commit(); conn2.close()
                 except: pass
 
                 stats_j = db_get_stats()
-                display(top, {'scans':scans,'fetched':len(raw),'valid':len(results),'ms':ms,'alerts':alerts}, stats_j)
+                display(top, {
+                    'scans':scans,'fetched':len(raw),
+                    'valid':len(results),'ms':ms,
+                }, stats_j, pm, closed_this_scan)
 
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                log.error(f'Scan error: {e}')
+                log.error(f'Error: {e}')
 
             try:
                 await asyncio.sleep(CFG['SCAN_INTERVAL'])
             except KeyboardInterrupt:
                 break
 
-    print(f'\n{Y}  Scanner berhenti. Total scan: {scans}{Z}')
+    final = db_get_stats()
+    print(f'\n{Y}  Bot berhenti. Scan: {scans}{Z}')
+    print(f'  Total trades: {final["total"]} | '
+          f'Win: {final["wins"]} | Loss: {final["losses"]} | '
+          f'P&L: ${final["pnl"]:+.2f}')
     print(f'  Journal: {CSV_PATH}\n')
 
 if __name__ == '__main__':
