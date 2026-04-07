@@ -73,8 +73,8 @@ SPIN = ['-', '\\', '|', '/']
 # ══════════════════════════════════════════════════════════════════
 # ENV VARIABLES
 # ══════════════════════════════════════════════════════════════════
-TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+TELEGRAM_TOKEN   = os.environ.get('8340614437:AAG-0RQsA_tbKdScd9uNNHqbcab7k1NDhkw', '')
+TELEGRAM_CHAT_ID = os.environ.get('6469687459', '')
 PRIVATE_KEY      = os.environ.get('PRIVATE_KEY', '')
 WALLET_ADDRESS   = os.environ.get('WALLET_ADDRESS', '')
 AUTO_TRADE       = os.environ.get('AUTO_TRADE', 'false').lower() == 'true'
@@ -1019,3 +1019,4 @@ if __name__ == '__main__':
     except Exception as e:
         log.error(f'Fatal error: {e}')
         sys.exit(1)
+    
