@@ -1,0 +1,1055 @@
+#!/usr/bin/env python3
+"""
+POLYMARKET FULL AUTO BOT v11.0
+================================
+FIX dari v10:
+  - TERM env not set → Railway crash FIXED
+  - os.system('clear') crash di non-TTY FIXED
+  - Unicode encoding crash FIXED
+  - already_opened reset saat restart FIXED (load dari DB)
+  - Auto OPEN + Auto CLOSE tetap berjalan
+"""
+
+# ── FIX PERTAMA: Set TERM sebelum import colorama ──────────────────
+import os, sys
+
+# Railway tidak set TERM → colorama crash. Fix:
+if not os.environ.get('TERM'):
+    os.environ['TERM'] = 'dumb'
+
+# Fix encoding agar unicode tidak crash di Railway logs
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+import asyncio
+import aiohttp
+import json
+import time
+import csv
+import sqlite3
+import logging
+import math
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Tuple
+from pathlib import Path
+
+# Colorama import aman
+try:
+    from colorama import Fore, Style, init as colorama_init
+    # strip=True → hapus kode warna jika tidak ada terminal (Railway)
+    IS_TTY = sys.stdout.isatty()
+    colorama_init(autoreset=True, strip=not IS_TTY)
+    GG=Fore.GREEN+Style.BRIGHT; G=Fore.GREEN; R=Fore.RED; RR=Fore.RED+Style.BRIGHT
+    Y=Fore.YELLOW; YY=Fore.YELLOW+Style.BRIGHT; C=Fore.CYAN
+    W=Fore.WHITE; WW=Fore.WHITE+Style.BRIGHT; M=Fore.MAGENTA; Z=Style.RESET_ALL
+except Exception:
+    GG=G=R=RR=Y=YY=C=W=WW=M=Z=''
+
+try:
+    from tabulate import tabulate
+except Exception:
+    def tabulate(rows, headers=None, tablefmt=None):
+        lines = []
+        if headers:
+            lines.append('  '.join(str(h) for h in headers))
+        for r in rows:
+            lines.append('  '.join(str(x) for x in r))
+        return '\n'.join(lines)
+
+SPIN = ['-','\\','|','/']
+
+# ══════════════════════════════════════════════════════════════════
+# ENV VARIABLES (Railway inject otomatis)
+# ══════════════════════════════════════════════════════════════════
+TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+PRIVATE_KEY      = os.environ.get('PRIVATE_KEY', '')
+WALLET_ADDRESS   = os.environ.get('WALLET_ADDRESS', '')
+AUTO_TRADE       = os.environ.get('AUTO_TRADE', 'false').lower() == 'true'
+
+# ══════════════════════════════════════════════════════════════════
+# KONFIGURASI
+# ══════════════════════════════════════════════════════════════════
+CFG = {
+    # API
+    'GAMMA_API'          : 'https://gamma-api.polymarket.com',
+    'CLOB_API'           : 'https://clob.polymarket.com',
+
+    # Scanner
+    'SCAN_INTERVAL'      : 30,
+    'MARKETS_PER_PAGE'   : 100,
+    'MAX_PAGES'          : 15,
+    'DISPLAY_TOP'        : 10,
+    'CLEAR_SCREEN'       : False,   # DINONAKTIFKAN — Railway tidak punya terminal
+
+    # Risk Management — aman untuk $10
+    'BANKROLL'           : 10.00,
+    'TRADE_PER_SIGNAL'   : 1.00,    # $1 per entry
+    'MAX_POSITIONS'      : 5,       # Max 5 posisi terbuka (aman untuk $10)
+    'MAX_EXPOSURE'       : 5.00,    # Max $5 total exposure
+
+    # Auto-Close rules
+    'TAKE_PROFIT_PCT'    : 50.0,    # Jual jika harga naik 50% dari entry
+    'STOP_LOSS_PCT'      : 40.0,    # Jual jika harga turun 40% dari entry
+    'TIME_EXIT_MINUTES'  : 60,      # Jual jika sisa waktu < 60 menit
+    'FORCE_EXIT_MINUTES' : 10,      # Force jual jika sisa < 10 menit
+    'MAX_HOLD_HOURS'     : 72,      # Force jual setelah 72 jam (dead market)
+
+    # Signal thresholds
+    'MIN_MOMENTUM'       : 10.0,
+    'MIN_LIQUIDITY'      : 500,
+    'VOL_SPIKE_RATIO'    : 3.0,
+    'NEAR_RES_HOURS'     : 6,
+    'KELLY_FRACTION'     : 0.25,
+}
+
+# ══════════════════════════════════════════════════════════════════
+# PATHS
+# ══════════════════════════════════════════════════════════════════
+JOURNAL_DIR = os.path.expanduser('~/polymarket-scanner/journal')
+Path(JOURNAL_DIR).mkdir(parents=True, exist_ok=True)
+DB_PATH  = os.path.join(JOURNAL_DIR, 'trades.db')
+CSV_PATH = os.path.join(JOURNAL_DIR, 'trades.csv')
+LOG_PATH = os.path.join(JOURNAL_DIR, 'scanner.log')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+log = logging.getLogger('poly')
+
+# ══════════════════════════════════════════════════════════════════
+# HELPER FORMAT
+# ══════════════════════════════════════════════════════════════════
+def fp(v, d=2):
+    if v >= 5:  return f'{GG}{v:+.{d}f}%{Z}'
+    if v > 0:   return f'{G}{v:+.{d}f}%{Z}'
+    if v == 0:  return '+0.00%'
+    if v > -5:  return f'{R}{v:+.{d}f}%{Z}'
+    return f'{RR}{v:+.{d}f}%{Z}'
+
+def fu(v):
+    if v >= 1_000_000: return f'${v/1_000_000:.1f}M'
+    if v >= 1_000:     return f'${v/1_000:.1f}K'
+    return f'${v:.0f}'
+
+def fd(d):
+    if d is None:    return '--'
+    if d < 0:        return f'{R}EXPIRED{Z}'
+    if d < 0.007:    return f'{RR}<10m{Z}'
+    if d < 0.042:    return f'{RR}<1h{Z}'
+    if d < 0.25:     return f'{RR}<6h{Z}'
+    if d < 1:        return f'{Y}{d*24:.0f}h{Z}'
+    return f'{W}{d:.1f}d{Z}'
+
+def strip_ansi(s):
+    """Hapus kode warna ANSI dari string"""
+    import re
+    return re.sub(r'\x1b\[[0-9;]*m', '', s)
+
+# ══════════════════════════════════════════════════════════════════
+# DATABASE
+# ══════════════════════════════════════════════════════════════════
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS positions (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        open_ts         TEXT NOT NULL,
+        close_ts        TEXT,
+        market_id       TEXT,
+        token_id        TEXT,
+        question        TEXT,
+        signal          TEXT,
+        outcome         TEXT,
+        entry_price     REAL,
+        exit_price      REAL,
+        amount_usd      REAL,
+        shares          REAL,
+        status          TEXT DEFAULT "OPEN",
+        close_reason    TEXT,
+        pnl_usd         REAL DEFAULT 0,
+        pnl_pct         REAL DEFAULT 0,
+        result          TEXT,
+        end_date        TEXT,
+        notes           TEXT
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS scan_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT, fetched INTEGER, valid INTEGER,
+        open_pos INTEGER, ms INTEGER
+    )''')
+    conn.commit()
+    conn.close()
+    log.info(f"DB OK: {DB_PATH}")
+
+def db_open_position(r: dict, amount: float, shares: float) -> int:
+    ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(DB_PATH)
+    cur  = conn.cursor()
+    cur.execute('''INSERT INTO positions
+        (open_ts,market_id,token_id,question,signal,outcome,
+         entry_price,amount_usd,shares,status,end_date)
+        VALUES (?,?,?,?,?,?,?,?,?,"OPEN",?)''', (
+        ts,
+        r.get('id', ''),
+        r.get('entry_token_id', ''),
+        r.get('question', '')[:200],
+        r.get('signal', ''),
+        r.get('entry_outcome', ''),
+        r.get('entry_price', 0),
+        amount, shares,
+        r.get('end_date', ''),
+    ))
+    pos_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    _csv_append({
+        'id': pos_id, 'ts': ts, 'type': 'OPEN',
+        'signal': r.get('signal', ''),
+        'question': r.get('question', '')[:80],
+        'outcome': r.get('entry_outcome', ''),
+        'price': r.get('entry_price', 0),
+        'amount': amount, 'shares': shares,
+        'status': 'OPEN', 'pnl': '',
+    })
+    log.info(f"OPEN #{pos_id}: {r.get('signal')} | {r.get('entry_outcome')} "
+             f"@ {r.get('entry_price', 0):.3f} | ${amount:.2f}")
+    return pos_id
+
+def db_close_position(pos_id: int, exit_price: float, reason: str) -> float:
+    conn = sqlite3.connect(DB_PATH)
+    cur  = conn.cursor()
+    cur.execute('SELECT entry_price, amount_usd, shares, outcome FROM positions WHERE id=?',
+                (pos_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return 0.0
+
+    entry_price, amount_usd, shares, outcome = row
+    # P&L: di Polymarket, profit = (exit_price - entry_price) * shares
+    proceeds = shares * exit_price if shares else 0
+    pnl_usd  = proceeds - amount_usd
+    pnl_pct  = (pnl_usd / amount_usd * 100) if amount_usd > 0 else 0
+    result   = 'WIN' if pnl_usd > 0 else 'LOSS'
+    ts       = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    cur.execute('''UPDATE positions SET
+        close_ts=?, exit_price=?, status="CLOSED",
+        close_reason=?, pnl_usd=?, pnl_pct=?, result=?
+        WHERE id=?''', (ts, exit_price, reason,
+                        round(pnl_usd, 4), round(pnl_pct, 2),
+                        result, pos_id))
+    conn.commit()
+    conn.close()
+
+    _csv_append({
+        'id': pos_id, 'ts': ts, 'type': 'CLOSE',
+        'signal': reason, 'question': '', 'outcome': outcome,
+        'price': exit_price, 'amount': amount_usd,
+        'shares': shares, 'status': 'CLOSED',
+        'pnl': round(pnl_usd, 4),
+    })
+    log.info(f"CLOSE #{pos_id}: {reason} @ {exit_price:.3f} | "
+             f"P&L: ${pnl_usd:+.3f} ({pnl_pct:+.1f}%) [{result}]")
+    return pnl_usd
+
+def db_get_open_positions() -> List[dict]:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur  = conn.cursor()
+        cur.execute('''SELECT id,open_ts,market_id,token_id,question,signal,
+                              outcome,entry_price,amount_usd,shares,end_date
+                       FROM positions WHERE status="OPEN" ORDER BY id''')
+        rows = cur.fetchall()
+        conn.close()
+        return [
+            {'id': r[0], 'open_ts': r[1], 'market_id': r[2],
+             'token_id': r[3], 'question': r[4], 'signal': r[5],
+             'outcome': r[6], 'entry_price': r[7], 'amount_usd': r[8],
+             'shares': r[9], 'end_date': r[10]}
+            for r in rows
+        ]
+    except Exception as e:
+        log.error(f'db_get_open_positions error: {e}')
+        return []
+
+def db_get_open_market_ids() -> set:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur  = conn.cursor()
+        cur.execute("SELECT market_id FROM positions WHERE status='OPEN'")
+        rows = cur.fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except:
+        return set()
+
+def db_get_stats() -> dict:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur  = conn.cursor()
+        cur.execute('SELECT COUNT(*) FROM positions')
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED'")
+        closed = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN'")
+        open_c = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND pnl_usd>0")
+        wins = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED'")
+        pnl = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(amount_usd),0) FROM positions WHERE status='OPEN'")
+        exposure = cur.fetchone()[0]
+        cur.execute('''SELECT open_ts,signal,substr(question,1,25),
+                              entry_price,amount_usd,status,pnl_usd,close_reason
+                       FROM positions ORDER BY id DESC LIMIT 8''')
+        recent = cur.fetchall()
+        conn.close()
+        wr = (wins / closed * 100) if closed > 0 else 0
+        return {
+            'total': total, 'closed': closed, 'open': open_c,
+            'wins': wins, 'losses': closed - wins, 'win_rate': wr,
+            'pnl': pnl, 'exposure': exposure, 'recent': recent,
+        }
+    except Exception as e:
+        log.error(f'db_get_stats error: {e}')
+        return {'total': 0, 'closed': 0, 'open': 0, 'wins': 0, 'losses': 0,
+                'win_rate': 0, 'pnl': 0, 'exposure': 0, 'recent': []}
+
+def _csv_append(row: dict):
+    try:
+        exists = os.path.exists(CSV_PATH)
+        with open(CSV_PATH, 'a', newline='', encoding='utf-8') as f:
+            w = csv.DictWriter(f, fieldnames=row.keys())
+            if not exists:
+                w.writeheader()
+            w.writerow(row)
+    except Exception as e:
+        log.error(f'CSV error: {e}')
+
+# ══════════════════════════════════════════════════════════════════
+# TELEGRAM
+# ══════════════════════════════════════════════════════════════════
+async def tg(session, text: str):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    # Hapus ANSI color codes agar Telegram tidak error
+    clean = strip_ansi(text)
+    try:
+        await session.post(
+            f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
+            json={'chat_id': TELEGRAM_CHAT_ID, 'text': clean, 'parse_mode': 'HTML'},
+            timeout=aiohttp.ClientTimeout(total=5)
+        )
+    except Exception as e:
+        log.warning(f'Telegram error: {e}')
+
+async def tg_open(session, r: dict, pos_id: int, amount: float):
+    mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
+    days_clean = strip_ansi(fd(r.get('days')))
+    text = (
+        f"<b>OPEN POSISI #{pos_id}</b>\n"
+        f"{'='*20}\n"
+        f"{r['question'][:70]}\n\n"
+        f"Signal: <b>{strip_ansi(r['signal'])}</b>\n"
+        f"Entry: <b>{r['entry_price']:.4f}</b>\n"
+        f"Bet: <b>${amount:.2f}</b>\n"
+        f"Sisa: {days_clean}\n"
+        f"Mode: {mode}\n"
+        f"TP: +{CFG['TAKE_PROFIT_PCT']:.0f}% | SL: -{CFG['STOP_LOSS_PCT']:.0f}% | "
+        f"TimeExit: <{CFG['TIME_EXIT_MINUTES']}m"
+    )
+    await tg(session, text)
+
+async def tg_close(session, pos: dict, exit_price: float, pnl: float, reason: str):
+    emoji = 'PROFIT' if pnl > 0 else 'LOSS'
+    text = (
+        f"<b>CLOSE POSISI #{pos['id']} [{emoji}]</b>\n"
+        f"{'='*20}\n"
+        f"{pos['question'][:50]}\n\n"
+        f"Alasan: <b>{strip_ansi(reason)}</b>\n"
+        f"Entry: {pos['entry_price']:.4f} | Exit: <b>{exit_price:.4f}</b>\n"
+        f"P&L: <b>${pnl:+.3f}</b>\n"
+    )
+    await tg(session, text)
+
+# ══════════════════════════════════════════════════════════════════
+# API
+# ══════════════════════════════════════════════════════════════════
+async def api_get(session, url, params=None):
+    try:
+        async with session.get(url, params=params,
+                               timeout=aiohttp.ClientTimeout(total=12)) as r:
+            if r.status == 200:
+                return await r.json(content_type=None)
+    except Exception:
+        pass
+    return None
+
+async def fetch_markets(session) -> List[dict]:
+    tasks = [
+        api_get(session, f"{CFG['GAMMA_API']}/markets", {
+            'active': 'true', 'closed': 'false',
+            'limit': CFG['MARKETS_PER_PAGE'],
+            'offset': i * CFG['MARKETS_PER_PAGE'],
+            'order': 'volume24hr', 'ascending': 'false',
+        })
+        for i in range(CFG['MAX_PAGES'])
+    ]
+    pages = await asyncio.gather(*tasks)
+    out = []
+    for p in pages:
+        if isinstance(p, list) and p:
+            out.extend(p)
+    return out
+
+async def fetch_price(session, token_id: str) -> Optional[float]:
+    if not token_id:
+        return None
+    try:
+        data = await api_get(session, f"{CFG['CLOB_API']}/midpoints",
+                             [('token_id', token_id)])
+        if isinstance(data, list) and data:
+            v = float(data[0].get('mid', 0))
+            return v if v > 0 else None
+    except Exception:
+        pass
+    return None
+
+async def fetch_clob_batch(session, token_ids: List[str]) -> Dict[str, dict]:
+    if not token_ids:
+        return {}
+    result = {}
+    batches = [token_ids[i:i+40] for i in range(0, min(len(token_ids), 200), 40)]
+    mid_tasks = [api_get(session, f"{CFG['CLOB_API']}/midpoints",
+                         [('token_id', t) for t in b]) for b in batches]
+    spd_tasks = [api_get(session, f"{CFG['CLOB_API']}/spreads",
+                         [('token_id', t) for t in b]) for b in batches]
+    mids_all, spds_all = await asyncio.gather(
+        asyncio.gather(*mid_tasks), asyncio.gather(*spd_tasks))
+    mid_map, spd_map = {}, {}
+    for page in mids_all:
+        if isinstance(page, list):
+            for x in page:
+                tid = str(x.get('token_id', ''))
+                try:
+                    mid_map[tid] = float(x.get('mid', 0))
+                except Exception:
+                    pass
+    for page in spds_all:
+        if isinstance(page, list):
+            for x in page:
+                tid = str(x.get('token_id', ''))
+                try:
+                    spd_map[tid] = float(x.get('spread', 0))
+                except Exception:
+                    pass
+    for tid, mid in mid_map.items():
+        if mid > 0:
+            spd = spd_map.get(tid, 0.04)
+            result[tid] = {
+                'mid': mid,
+                'bid': max(0.001, mid - spd / 2),
+                'ask': min(0.999, mid + spd / 2),
+                'spread': spd,
+            }
+    return result
+
+# ══════════════════════════════════════════════════════════════════
+# PARSER
+# ══════════════════════════════════════════════════════════════════
+def parse_list(raw) -> list:
+    if isinstance(raw, list): return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return []
+    return []
+
+def parse_prices(m: dict) -> List[float]:
+    for field in ['outcomePrices', 'prices']:
+        raw = parse_list(m.get(field, []))
+        if raw:
+            try:
+                vals = [max(0.001, min(0.999, float(str(x)))) for x in raw]
+                if len(vals) >= 2:
+                    return vals
+            except Exception:
+                pass
+    return []
+
+def parse_outcomes(m: dict) -> List[str]:
+    return [str(x) for x in parse_list(m.get('outcomes', '[]'))]
+
+def parse_token_ids(m: dict) -> List[str]:
+    return [str(x) for x in parse_list(m.get('clobTokenIds', '[]'))]
+
+def parse_days(m: dict) -> Optional[float]:
+    for f in ['endDateIso', 'endDate']:
+        val = m.get(f)
+        if val:
+            try:
+                dt = datetime.fromisoformat(str(val).replace('Z', '+00:00'))
+                return (dt - datetime.now(timezone.utc)).total_seconds() / 86400
+            except Exception:
+                pass
+    return None
+
+# ══════════════════════════════════════════════════════════════════
+# ANALISIS SINYAL
+# ══════════════════════════════════════════════════════════════════
+def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
+    N = len(gamma_px)
+    if N < 2:
+        return None
+
+    ask_prices = [
+        clob[i]['ask'] if i < len(clob) and clob[i] else gamma_px[i]
+        for i in range(N)
+    ]
+    ask_sum    = sum(ask_prices)
+    is_arb     = ask_sum < 0.995
+    arb_profit = max(0.0, (1.0 - ask_sum) * 100)
+
+    spreads = []
+    for i in range(N):
+        if i < len(clob) and clob[i] and clob[i]['mid'] > 0:
+            spreads.append(clob[i]['spread'] / clob[i]['mid'] * 100)
+        else:
+            spreads.append(0.0)
+    max_spread = max(spreads) if spreads else 0.0
+
+    mom_pct, mom_dir = 0.0, ''
+    if prev_px and len(prev_px) == N and prev_px[0] > 0:
+        chg     = (gamma_px[0] - prev_px[0]) / prev_px[0] * 100
+        mom_pct = chg
+        if chg >= 5:   mom_dir = f'UP {chg:.1f}%'
+        elif chg <= -5: mom_dir = f'DN {abs(chg):.1f}%'
+
+    near_res, near_note, near_bonus = False, '', 0.0
+    if days is not None and 0 <= days <= 1:
+        for p in gamma_px:
+            if 0.05 < p < 0.95:
+                near_res = True; near_bonus = 25.0
+                if days < 0.007:   near_note = '<10m!'
+                elif days < 0.042: near_note = '<1h'
+                elif days < 0.25:  near_note = '<6h'
+                elif days < 0.5:   near_note = '<12h'
+                else:              near_note = '<24h'
+                break
+
+    vol_spike, vol_note, vol_bonus = False, '', 0.0
+    if liq > 0 and vol > liq * CFG['VOL_SPIKE_RATIO']:
+        vol_spike = True
+        ratio     = vol / liq
+        vol_note  = f'VOL {ratio:.0f}x'
+        vol_bonus = min(25.0, ratio * 3)
+
+    entry_i = 0
+    entry_px = ask_prices[0]
+    ev_pct   = arb_profit if is_arb else 0.0
+
+    entry_name = names[entry_i] if entry_i < len(names) else names[0]
+
+    kelly = 0.0
+    if ev_pct > 0 and 0.001 < entry_px < 0.999:
+        fair_p = min(0.999, entry_px * (1 + ev_pct / 100))
+        b = (1 / entry_px) - 1
+        if b > 0:
+            k = (b * fair_p - (1 - fair_p)) / b
+            kelly = max(0.0, k * CFG['KELLY_FRACTION'])
+
+    score = (
+        (100 if is_arb else 0) +
+        min(60, abs(mom_pct) * 4) +
+        min(25, max_spread * 2.5) +
+        min(15, math.log10(max(liq, 1)) * 4) +
+        min(15, math.log10(max(vol, 1)) * 4) +
+        near_bonus + vol_bonus
+    )
+
+    is_strong = False
+    if is_arb and arb_profit > 0.2:
+        signal = 'ARBITRAGE'; action = f'BELI {"+".join(names[:2])}'; color = GG
+        is_strong = True
+    elif abs(mom_pct) >= 15 and near_res and vol_spike:
+        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
+        signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
+        entry_name = d; is_strong = True
+    elif abs(mom_pct) >= 10 and near_res:
+        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
+        signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
+        entry_name = d; is_strong = True
+    elif abs(mom_pct) >= 15:
+        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
+        signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
+        entry_name = d; is_strong = True
+    elif abs(mom_pct) >= 10 and vol_spike:
+        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
+        signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
+        entry_name = d; is_strong = True
+    elif vol_spike and near_res:
+        signal = 'EDGE'; action = f'WATCH {entry_name[:10].upper()}'; color = YY
+        is_strong = True
+    elif abs(mom_pct) >= 5 and near_res:
+        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
+        signal = 'EDGE'; action = f'BUY {d[:10].upper()}'; color = YY
+        entry_name = d
+    elif abs(mom_pct) >= 5:
+        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
+        signal = 'MOMENTUM'; action = f'WATCH {d[:10].upper()}'; color = C
+        entry_name = d
+    elif near_res and days is not None and days < 0.25:
+        signal = 'NEAR-RES'; action = 'WATCH'; color = Y
+    else:
+        signal = 'MONITOR'; action = 'MONITOR'; color = W
+
+    # Recalculate entry price based on selected entry_name
+    entry_idx = next((i for i, n in enumerate(names) if n == entry_name), 0)
+    entry_px  = ask_prices[entry_idx] if entry_idx < len(ask_prices) else ask_prices[0]
+
+    return {
+        'signal': signal, 'action': action, 'color': color,
+        'names': names, 'gamma_px': gamma_px, 'ask_prices': ask_prices,
+        'is_arb': is_arb, 'arb_profit': arb_profit,
+        'entry_outcome': entry_name, 'entry_price': entry_px,
+        'entry_token_idx': entry_idx,
+        'ev_pct': ev_pct, 'kelly': kelly, 'kelly_usd': kelly * CFG['BANKROLL'],
+        'spread_pct': max_spread,
+        'momentum_pct': mom_pct, 'momentum_dir': mom_dir,
+        'near_res': near_res, 'near_note': near_note,
+        'vol_spike': vol_spike, 'vol_note': vol_note,
+        'score': score, 'is_strong': is_strong,
+        'clob': clob,
+    }
+
+def process(m: dict, history: dict, clob_map: dict) -> Optional[dict]:
+    try:
+        q = (m.get('question') or '').strip()
+        if not q:
+            return None
+        liq    = float(m.get('liquidity') or 0)
+        vol    = float(m.get('volume24hr') or m.get('volume') or 0)
+        names  = parse_outcomes(m)
+        prices = parse_prices(m)
+        tids   = parse_token_ids(m)
+        days   = parse_days(m)
+        if len(prices) < 2 or len(names) < 2:
+            return None
+        if days is not None and days < -1:
+            return None
+        n = min(len(names), len(prices))
+        names, prices = names[:n], prices[:n]
+        clob = [clob_map.get(tids[i]) if i < len(tids) else None for i in range(n)]
+        mid  = str(m.get('id', q[:40]))
+        res  = analyze(names, prices, clob, liq, vol, days, history.get(mid, []))
+        if not res:
+            return None
+        entry_idx = res.get('entry_token_idx', 0)
+        entry_tid = tids[entry_idx] if entry_idx < len(tids) else ''
+        end_date  = m.get('endDateIso') or m.get('endDate') or ''
+        return {
+            'id': mid, 'question': q,
+            'category': str(m.get('category') or 'General')[:20],
+            'liquidity': liq, 'volume_24h': vol, 'days': days,
+            'token_ids': tids, 'entry_token_id': entry_tid,
+            'end_date': end_date,
+            **res,
+        }
+    except Exception as e:
+        log.debug(f'process error: {e}')
+        return None
+
+# ══════════════════════════════════════════════════════════════════
+# AUTO-CLOSE ENGINE
+# ══════════════════════════════════════════════════════════════════
+class PositionManager:
+    def __init__(self):
+        self.open_positions: List[dict] = []
+
+    async def refresh(self):
+        self.open_positions = db_get_open_positions()
+
+    @property
+    def count(self) -> int:
+        return len(self.open_positions)
+
+    @property
+    def total_exposure(self) -> float:
+        return sum(p['amount_usd'] for p in self.open_positions)
+
+    def can_open(self) -> Tuple[bool, str]:
+        if self.count >= CFG['MAX_POSITIONS']:
+            return False, f"Max {CFG['MAX_POSITIONS']} posisi tercapai"
+        if self.total_exposure + CFG['TRADE_PER_SIGNAL'] > CFG['MAX_EXPOSURE']:
+            return False, f"Max exposure ${CFG['MAX_EXPOSURE']} tercapai"
+        return True, 'OK'
+
+    async def check_and_close(self, session) -> List[dict]:
+        """Cek semua posisi OPEN. Tutup yang memenuhi syarat."""
+        closed_list = []
+        now = datetime.now(timezone.utc)
+
+        for pos in self.open_positions:
+            entry_price = pos['entry_price']
+            token_id    = pos.get('token_id', '')
+            end_date    = pos.get('end_date', '')
+
+            # Hitung sisa waktu
+            days_left = None
+            if end_date:
+                try:
+                    dt = datetime.fromisoformat(str(end_date).replace('Z', '+00:00'))
+                    days_left = (dt - now).total_seconds() / 86400
+                except Exception:
+                    pass
+
+            # Hitung berapa lama posisi sudah dibuka
+            hold_hours = 0
+            try:
+                open_dt  = datetime.strptime(pos['open_ts'], '%Y-%m-%d %H:%M:%S')
+                open_dt  = open_dt.replace(tzinfo=timezone.utc)
+                hold_hours = (now - open_dt).total_seconds() / 3600
+            except Exception:
+                pass
+
+            # Fetch harga terbaru
+            current_price = await fetch_price(session, token_id)
+            if current_price is None:
+                current_price = entry_price  # fallback ke entry price
+
+            # Hitung perubahan harga
+            price_change_pct = 0.0
+            if entry_price > 0:
+                price_change_pct = (current_price - entry_price) / entry_price * 100
+
+            # ── Tentukan apakah perlu close ──────────────────────
+            should_close = False
+            close_reason = ''
+            exit_price   = current_price
+
+            # Prioritas 1: Force exit (sisa sangat sedikit)
+            if days_left is not None and 0 <= days_left < CFG['FORCE_EXIT_MINUTES'] / 1440:
+                should_close = True
+                close_reason = f'FORCE_EXIT (<{CFG["FORCE_EXIT_MINUTES"]}m)'
+
+            # Prioritas 2: Market expired
+            elif days_left is not None and days_left < 0:
+                should_close = True
+                close_reason = 'EXPIRED'
+                exit_price   = 0.0  # tidak bisa jual lagi
+
+            # Prioritas 3: Time exit
+            elif days_left is not None and 0 <= days_left < CFG['TIME_EXIT_MINUTES'] / 1440:
+                should_close = True
+                close_reason = f'TIME_EXIT (<{CFG["TIME_EXIT_MINUTES"]}m)'
+
+            # Prioritas 4: Take Profit
+            elif price_change_pct >= CFG['TAKE_PROFIT_PCT']:
+                should_close = True
+                close_reason = f'TAKE_PROFIT (+{price_change_pct:.1f}%)'
+
+            # Prioritas 5: Stop Loss
+            elif price_change_pct <= -CFG['STOP_LOSS_PCT']:
+                should_close = True
+                close_reason = f'STOP_LOSS ({price_change_pct:.1f}%)'
+
+            # Prioritas 6: Max hold time
+            elif hold_hours >= CFG['MAX_HOLD_HOURS']:
+                should_close = True
+                close_reason = f'MAX_HOLD ({hold_hours:.0f}h)'
+
+            if should_close:
+                pnl = db_close_position(pos['id'], exit_price, close_reason)
+                await tg_close(session, pos, exit_price, pnl, close_reason)
+                closed_list.append({
+                    'pos': pos,
+                    'exit_price': exit_price,
+                    'pnl': pnl,
+                    'reason': close_reason,
+                    'price_change': price_change_pct,
+                })
+
+        if closed_list:
+            await self.refresh()
+
+        return closed_list
+
+    async def open_position(self, session, r: dict) -> Optional[int]:
+        can, why = self.can_open()
+        if not can:
+            log.info(f'SKIP OPEN: {why}')
+            return None
+        amount = CFG['TRADE_PER_SIGNAL']
+        entry  = r['entry_price']
+        shares = amount / entry if entry > 0 else 0
+        pos_id = db_open_position(r, amount, shares)
+        await tg_open(session, r, pos_id, amount)
+        await self.refresh()
+        return pos_id
+
+# ══════════════════════════════════════════════════════════════════
+# DISPLAY — Aman untuk Railway (no TTY)
+# ══════════════════════════════════════════════════════════════════
+def print_sep(char='=', n=70):
+    print(char * n)
+
+def banner():
+    mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
+    print_sep('=')
+    print('  POLYMARKET AUTO BOT v11.0')
+    print(f'  Mode: {mode} | '
+          f'TP: +{CFG["TAKE_PROFIT_PCT"]:.0f}% | '
+          f'SL: -{CFG["STOP_LOSS_PCT"]:.0f}% | '
+          f'TimeExit: <{CFG["TIME_EXIT_MINUTES"]}m | '
+          f'MaxPos: {CFG["MAX_POSITIONS"]}')
+    print_sep('=')
+
+def display_stats(st: dict, pm: 'PositionManager'):
+    print(f'\n  JOURNAL: Total={st["total"]} | '
+          f'Open={pm.count}/{CFG["MAX_POSITIONS"]} | '
+          f'Closed={st["closed"]} | '
+          f'Win={st["wins"]} | Loss={st["losses"]} | '
+          f'WR={st["win_rate"]:.1f}% | '
+          f'P&L=${st["pnl"]:+.2f}')
+    print(f'  Exposure: ${pm.total_exposure:.2f}/${CFG["MAX_EXPOSURE"]:.0f} | '
+          f'Slot tersisa: {CFG["MAX_POSITIONS"] - pm.count}')
+
+    if pm.open_positions:
+        print(f'\n  POSISI TERBUKA ({pm.count}):')
+        for p in pm.open_positions:
+            days_clean = strip_ansi(fd(None))
+            print(f'    #{p["id"]} | {p["signal"][:12]} | '
+                  f'{p["question"][:35]} | '
+                  f'Entry:{p["entry_price"]:.3f} | '
+                  f'${p["amount_usd"]:.2f} | {p["open_ts"][11:16]}')
+
+    if st['recent']:
+        print(f'\n  RIWAYAT TERBARU:')
+        rows = []
+        for t in st['recent']:
+            ts, sig, q, ep, amt, status, pnl_v, reason = t
+            pnl_str = f'+${pnl_v:.3f}' if (pnl_v or 0) > 0 else f'${(pnl_v or 0):.3f}'
+            rows.append([ts[11:16], sig[:12], q, f'{ep:.3f}',
+                         f'${amt:.2f}', status, pnl_str,
+                         (reason or '')[:15]])
+        print(tabulate(rows,
+            headers=['Jam', 'Signal', 'Pasar', 'Entry', 'Bet', 'Status', 'P&L', 'Close Reason'],
+            tablefmt='simple'))
+
+def display(results, stats_scan, stats_j, pm, closed_this_scan):
+    # Di Railway: tidak clear screen, langsung print
+    sp = SPIN[stats_scan['scans'] % 4]
+    ts = datetime.now().strftime('%H:%M:%S')
+    print('\n' + '='*70)
+    print(f'  [{sp}] {ts} | Scan #{stats_scan["scans"]} | '
+          f'Pasar: {stats_scan["fetched"]} | '
+          f'Valid: {stats_scan["valid"]} | '
+          f'{stats_scan["ms"]}ms | '
+          f'Close scan ini: {len(closed_this_scan)}')
+
+    banner()
+    display_stats(stats_j, pm)
+
+    if closed_this_scan:
+        print(f'\n  BARU DITUTUP ({len(closed_this_scan)} posisi):')
+        for c in closed_this_scan:
+            pnl = c['pnl']
+            status = 'PROFIT' if pnl > 0 else 'LOSS'
+            print(f'    [{status}] #{c["pos"]["id"]} | {c["reason"]} | '
+                  f'P&L: ${pnl:+.3f} | '
+                  f'{c["pos"]["question"][:40]}')
+
+    if not results:
+        print('\n  Menunggu data...')
+        return
+
+    can_open, _ = pm.can_open()
+    slot_info = f'BISA OPEN ({CFG["MAX_POSITIONS"] - pm.count} slot)' if can_open else 'PENUH'
+    print(f'\n  TOP {len(results)} SINYAL | {slot_info}')
+
+    rows = []
+    for rank, r in enumerate(results, 1):
+        q    = (r['question'][:28] + '..') if len(r['question']) > 28 else r['question']
+        can  = 'Y' if (r.get('is_strong') and can_open) else '-'
+        rows.append([
+            rank, r['signal'], q,
+            r['action'][:14],
+            f'{r["entry_price"]:.3f}',
+            f'{r["momentum_pct"]:+.1f}%',
+            strip_ansi(fd(r['days'])),
+            f'{r["score"]:.0f}',
+            fu(r['liquidity']),
+            can,
+        ])
+
+    print(tabulate(rows,
+        headers=['#', 'Signal', 'Pasar', 'Action', 'Entry',
+                 'Mom', 'Sisa', 'Skor', 'Liq', 'Open?'],
+        tablefmt='simple'))
+    print()
+
+# ══════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════
+async def main():
+    init_db()
+    banner()
+    log.info('=== POLYMARKET AUTO BOT v11.0 START ===')
+    log.info(f'Max posisi: {CFG["MAX_POSITIONS"]} | '
+             f'TP: +{CFG["TAKE_PROFIT_PCT"]}% | '
+             f'SL: -{CFG["STOP_LOSS_PCT"]}% | '
+             f'TimeExit: <{CFG["TIME_EXIT_MINUTES"]}m | '
+             f'ForceExit: <{CFG["FORCE_EXIT_MINUTES"]}m | '
+             f'MaxHold: {CFG["MAX_HOLD_HOURS"]}h')
+    log.info(f'Mode: {"REAL TRADE" if AUTO_TRADE and PRIVATE_KEY else "PAPER TRADE"}')
+    log.info(f'Telegram: {"aktif" if TELEGRAM_TOKEN else "tidak aktif"}')
+    log.info(f'DB: {DB_PATH}')
+
+    await asyncio.sleep(2)
+
+    history : Dict[str, list] = {}
+    scans   = 0
+    pm      = PositionManager()
+    await pm.refresh()
+
+    # Load sudah-dibuka dari DB (tahan restart Railway)
+    already_opened = db_get_open_market_ids()
+    log.info(f'Loaded {len(already_opened)} open positions dari DB')
+
+    connector = aiohttp.TCPConnector(limit=50, limit_per_host=15,
+                                     ttl_dns_cache=300, ssl=False)
+    hdrs = {'User-Agent': 'Mozilla/5.0 PolyBot/11.0', 'Accept': 'application/json'}
+
+    async with aiohttp.ClientSession(connector=connector, headers=hdrs) as session:
+        if TELEGRAM_TOKEN:
+            mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
+            await tg(session,
+                f'<b>Polymarket Auto Bot v11.0 Online!</b>\n'
+                f'Mode: <b>{mode}</b>\n'
+                f'Max: {CFG["MAX_POSITIONS"]} posisi / ${CFG["MAX_EXPOSURE"]:.0f}\n'
+                f'TP: +{CFG["TAKE_PROFIT_PCT"]:.0f}% | '
+                f'SL: -{CFG["STOP_LOSS_PCT"]:.0f}% | '
+                f'TimeExit: <{CFG["TIME_EXIT_MINUTES"]}m')
+
+        while True:
+            t0 = time.time()
+            closed_this_scan = []
+            try:
+                # ── 1. AUTO-CLOSE: Cek dan tutup posisi ─────────
+                await pm.refresh()
+                if pm.open_positions:
+                    closed_this_scan = await pm.check_and_close(session)
+                    if closed_this_scan:
+                        await pm.refresh()
+                        # Market yang ditutup boleh dibuka lagi nanti
+                        for c in closed_this_scan:
+                            already_opened.discard(c['pos']['market_id'])
+
+                # ── 2. Fetch markets ─────────────────────────────
+                raw = await fetch_markets(session)
+
+                all_tids = []
+                for m in raw:
+                    tids = parse_token_ids(m)
+                    all_tids.extend(tids[:2])
+                all_tids = list(dict.fromkeys(all_tids))
+
+                clob_map = await fetch_clob_batch(session, all_tids)
+
+                # ── 3. Process markets ───────────────────────────
+                results  = []
+                new_hist : Dict[str, list] = {}
+                for m in raw:
+                    try:
+                        r = process(m, history, clob_map)
+                        if r:
+                            results.append(r)
+                            new_hist[r['id']] = r['gamma_px']
+                        else:
+                            mid = str(m.get('id', ''))
+                            pp  = parse_prices(m)
+                            if mid and pp:
+                                new_hist[mid] = pp
+                    except Exception:
+                        continue
+
+                history = new_hist
+                results.sort(key=lambda x: x['score'], reverse=True)
+                top = results[:CFG['DISPLAY_TOP']]
+
+                scans += 1
+                ms = int((time.time() - t0) * 1000)
+
+                # ── 4. AUTO-OPEN: Buka posisi baru ──────────────
+                for r in top:
+                    if not r.get('is_strong'):
+                        continue
+                    if r['id'] in already_opened:
+                        continue
+                    if r['liquidity'] < CFG['MIN_LIQUIDITY']:
+                        continue
+                    # Jangan buka jika kurang dari 2x time_exit sisa waktu
+                    min_days = (CFG['TIME_EXIT_MINUTES'] * 2) / 1440
+                    if r['days'] is not None and r['days'] < min_days:
+                        continue
+
+                    can, _ = pm.can_open()
+                    if not can:
+                        break
+
+                    pos_id = await pm.open_position(session, r)
+                    if pos_id:
+                        already_opened.add(r['id'])
+                    break  # Buka max 1 per scan
+
+                # ── 5. Log scan ──────────────────────────────────
+                try:
+                    c2 = sqlite3.connect(DB_PATH)
+                    c2.execute(
+                        'INSERT INTO scan_log (ts,fetched,valid,open_pos,ms) VALUES (?,?,?,?,?)',
+                        (datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                         len(raw), len(results), pm.count, ms)
+                    )
+                    c2.commit(); c2.close()
+                except Exception:
+                    pass
+
+                stats_j = db_get_stats()
+                display(top, {
+                    'scans': scans, 'fetched': len(raw),
+                    'valid': len(results), 'ms': ms,
+                }, stats_j, pm, closed_this_scan)
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                log.error(f'Main loop error: {e}')
+
+            try:
+                await asyncio.sleep(CFG['SCAN_INTERVAL'])
+            except KeyboardInterrupt:
+                break
+
+    final = db_get_stats()
+    log.info(f'Bot berhenti. Total scan: {scans}')
+    log.info(f'Total: {final["total"]} | Win: {final["wins"]} | '
+             f'Loss: {final["losses"]} | P&L: ${final["pnl"]:+.2f}')
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print('\nBot berhenti.\n')
+    except Exception as e:
+        log.error(f'Fatal error: {e}')
+        sys.exit(1)
