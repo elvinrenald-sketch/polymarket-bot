@@ -40,6 +40,11 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 
+try:
+    from intelligence import TradingBrain
+except ImportError:
+    TradingBrain = None
+
 # Colorama import aman — strip warna di Railway (no TTY)
 try:
     from colorama import Fore, Style, init as colorama_init
@@ -108,6 +113,7 @@ CFG = {
     'TIME_EXIT_MINUTES'   : 45,      # Close jika sisa < 45 menit
     'FORCE_EXIT_MINUTES'  : 3,       # FORCE close jika sisa < 3 menit
     'MAX_HOLD_HOURS'      : 72,      # Force close setelah 72 jam
+    'MIN_ML_CONFIDENCE'   : 50.0,    # Minimal skor dari Brain (0-100)
 
     # Signal — hanya STRONG BUY & ARBITRAGE yang auto-open
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
@@ -123,7 +129,8 @@ CFG = {
 # ══════════════════════════════════════════════════════════════════
 JOURNAL_DIR = os.path.expanduser('~/polymarket-scanner/journal')
 Path(JOURNAL_DIR).mkdir(parents=True, exist_ok=True)
-DB_PATH  = os.path.join(JOURNAL_DIR, 'trades.db')
+DB_PATH    = os.path.join(JOURNAL_DIR, 'trades.db')
+MODEL_PATH = os.path.join(JOURNAL_DIR, 'brain.joblib')
 CSV_PATH = os.path.join(JOURNAL_DIR, 'trades.csv')
 LOG_PATH = os.path.join(JOURNAL_DIR, 'scanner.log')
 
@@ -205,7 +212,8 @@ def init_db():
         pnl_usd       REAL DEFAULT 0,
         pnl_pct       REAL DEFAULT 0,
         result        TEXT,
-        end_date      TEXT
+        end_date      TEXT,
+        features_json TEXT
     )''')
     conn.execute('''CREATE TABLE IF NOT EXISTS scan_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -218,12 +226,13 @@ def init_db():
 
 def db_open_position(r: dict, amount: float, shares: float) -> int:
     ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    features = json.dumps(r) # Save the whole result as features
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
     cur.execute('''INSERT INTO positions
         (open_ts,market_id,token_id,question,signal,outcome,
-         entry_price,amount_usd,shares,status,end_date)
-        VALUES (?,?,?,?,?,?,?,?,?,"OPEN",?)''', (
+         entry_price,amount_usd,shares,status,end_date,features_json)
+        VALUES (?,?,?,?,?,?,?,?,?,"OPEN",?,?)''', (
         ts,
         r.get('id', ''),
         r.get('entry_token_id', ''),
@@ -233,6 +242,7 @@ def db_open_position(r: dict, amount: float, shares: float) -> int:
         r.get('entry_price', 0),
         amount, shares,
         r.get('end_date', ''),
+        features
     ))
     pos_id = cur.lastrowid
     conn.commit(); conn.close()
@@ -838,8 +848,9 @@ def display(results, stats_scan, stats_j, pm, closed_this_scan):
     for rank, r in enumerate(results, 1):
         q   = (r['question'][:28] + '..') if len(r['question']) > 28 else r['question']
         can = 'AUTO' if (r.get('is_auto') and can_open) else ('-' if not r.get('is_strong') else 'WATCH')
-        rows.append([rank, r['signal'], q, r['action'][:14], f'{r["entry_price"]:.3f}', f'{r["momentum_pct"]:+.1f}%', fd(r['days']), f'{r["score"]:.0f}', fu(r['liquidity']), can])
-    print(tabulate(rows, headers=['#', 'Signal', 'Pasar', 'Action', 'Entry', 'Mom', 'Sisa', 'Skor', 'Liq', 'Auto?'], tablefmt='simple'))
+        bs  = f"{r.get('brain_score', 100):.0f}%"
+        rows.append([rank, r['signal'], q, r['action'][:14], f'{r["entry_price"]:.3f}', bs, fd(r['days']), f'{r["score"]:.0f}', fu(r['liquidity']), can])
+    print(tabulate(rows, headers=['#', 'Signal', 'Pasar', 'Action', 'Entry', 'Brain', 'Sisa', 'Skor', 'Liq', 'Auto?'], tablefmt='simple'))
     print()
 
 # ══════════════════════════════════════════════════════════════════
@@ -847,6 +858,12 @@ def display(results, stats_scan, stats_j, pm, closed_this_scan):
 # ══════════════════════════════════════════════════════════════════
 async def main():
     init_db()
+    
+    # Initialize Brain
+    brain = None
+    if TradingBrain:
+        brain = TradingBrain(DB_PATH, MODEL_PATH)
+
     banner()
     log.info('=== POLYMARKET AUTO BOT v11.2 START ===')
     log.info(f'TIME_EXIT={CFG["TIME_EXIT_MINUTES"]}m | FORCE_EXIT={CFG["FORCE_EXIT_MINUTES"]}m | MAX_EXP=${CFG["MAX_EXPOSURE"]} | MAX_POS={CFG["MAX_POSITIONS"]}')
@@ -895,6 +912,12 @@ async def main():
                     try:
                         r = process(m, history, clob_map)
                         if r:
+                            # ML Prediction
+                            if brain:
+                                r['brain_score'] = brain.predict_confidence(r)
+                            else:
+                                r['brain_score'] = 100.0
+
                             results.append(r)
                             new_hist[r['id']] = r['gamma_px']
                         else:
@@ -917,8 +940,13 @@ async def main():
                     if r.get('is_auto')
                     and r['id'] not in already_opened
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
+                    and r.get('brain_score', 100) >= CFG['MIN_ML_CONFIDENCE']
                     and (r['days'] is None or r['days'] >= (CFG['TIME_EXIT_MINUTES'] * 2) / 1440)
                 ]
+
+                # Run Brain Training every 10 scans
+                if brain and scans % 10 == 0:
+                    await asyncio.to_thread(brain.train)
 
                 if auto_candidates:
                     can, _ = pm.can_open()
