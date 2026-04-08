@@ -159,6 +159,29 @@ def fu(v) -> str:
     if v >= 1_000:     return f'${v/1_000:.1f}K'
     return f'${v:.0f}'
 
+def format_sisa(days) -> str:
+    if days is None: return '--'
+    if days < 0: return 'EXPIRED'
+    total_seconds = int(days * 86400)
+    if total_seconds < 60: return f'{total_seconds}s'
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    if hours > 24: return f'{hours//24}d {hours%24}h'
+    if hours > 0: return f'{hours}h {minutes}m'
+    return f'{minutes}m'
+
+def parse_iso_date(date_str: str) -> Optional[datetime]:
+    if not date_str: return None
+    try:
+        # Handle Z or +00:00
+        clean_str = str(date_str).replace('Z', '+00:00')
+        # If it's just a date (YYYY-MM-DD), add end of day
+        if len(clean_str) == 10:
+            clean_str += "T23:59:59+00:00"
+        return datetime.fromisoformat(clean_str)
+    except Exception:
+        return None
+
 # ══════════════════════════════════════════════════════════════════
 # DATABASE
 # ══════════════════════════════════════════════════════════════════
@@ -474,10 +497,9 @@ def parse_days(m: dict) -> Optional[float]:
     for f in ['endDateIso', 'endDate']:
         val = m.get(f)
         if val:
-            try:
-                dt = datetime.fromisoformat(str(val).replace('Z', '+00:00'))
+            dt = parse_iso_date(val)
+            if dt:
                 return (dt - datetime.now(timezone.utc)).total_seconds() / 86400
-            except Exception: pass
     return None
 
 # ══════════════════════════════════════════════════════════════════
@@ -670,30 +692,26 @@ class PositionManager:
             return False, f"Exposure penuh ${self.total_exposure:.2f}/${CFG['MAX_EXPOSURE']}"
         return True, 'OK'
 
-    async def check_and_close(self, session) -> List[dict]:
+    async def check_and_close(self, session, active_market_ids: Optional[set] = None) -> List[dict]:
         closed_list = []
         now = datetime.now(timezone.utc)
 
         for pos in self.open_positions:
             entry_price = pos['entry_price']
             token_id    = pos.get('token_id', '')
+            market_id   = pos.get('market_id', '')
             end_date    = pos.get('end_date', '')
 
-            days_left = None
-            if end_date:
-                try:
-                    dt = datetime.fromisoformat(str(end_date).replace('Z', '+00:00'))
-                    days_left = (dt - now).total_seconds() / 86400
-                except Exception:
-                    pass
+            dt = parse_iso_date(end_date)
+            days_left = (dt - now).total_seconds() / 86400 if dt else None
 
+            # hold_hours: use UTC for both
             hold_hours = 0
             try:
                 open_str   = pos['open_ts']
-                open_naive = datetime.strptime(open_str, '%Y-%m-%d %H:%M:%S')
-                hold_hours = (datetime.now() - open_naive).total_seconds() / 3600
-            except Exception:
-                pass
+                open_dt    = datetime.strptime(open_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+                hold_hours = (now - open_dt).total_seconds() / 3600
+            except Exception: pass
 
             current_price = await fetch_price(session, token_id)
             if current_price is None:
@@ -707,25 +725,25 @@ class PositionManager:
             close_reason = ''
             exit_price   = current_price
 
+            # Check if market is still returned as active by Gamma API
+            market_ghost = active_market_ids is not None and market_id not in active_market_ids
+
             if days_left is not None and 0 <= days_left < CFG['FORCE_EXIT_MINUTES'] / 1440:
-                should_close = True
-                close_reason = f'FORCE_EXIT (<{CFG["FORCE_EXIT_MINUTES"]}m)'
+                should_close = True; close_reason = f'FORCE_EXIT (<{CFG["FORCE_EXIT_MINUTES"]}m)'
             elif days_left is not None and days_left < 0:
-                should_close = True
-                close_reason = 'EXPIRED'
-                exit_price   = 0.0
+                should_close = True; close_reason = 'EXPIRED'; exit_price = 0.0
             elif days_left is not None and 0 <= days_left < CFG['TIME_EXIT_MINUTES'] / 1440:
-                should_close = True
-                close_reason = f'TIME_EXIT (<{CFG["TIME_EXIT_MINUTES"]}m)'
+                should_close = True; close_reason = f'TIME_EXIT (<{CFG["TIME_EXIT_MINUTES"]}m)'
             elif price_change_pct >= CFG['TAKE_PROFIT_PCT']:
-                should_close = True
-                close_reason = f'TAKE_PROFIT (+{price_change_pct:.1f}%)'
+                should_close = True; close_reason = f'TAKE_PROFIT (+{price_change_pct:.1f}%)'
             elif price_change_pct <= -CFG['STOP_LOSS_PCT']:
-                should_close = True
-                close_reason = f'STOP_LOSS ({price_change_pct:.1f}%)'
+                should_close = True; close_reason = f'STOP_LOSS ({price_change_pct:.1f}%)'
             elif hold_hours >= CFG['MAX_HOLD_HOURS']:
-                should_close = True
-                close_reason = f'MAX_HOLD ({hold_hours:.0f}h)'
+                should_close = True; close_reason = f'MAX_HOLD ({hold_hours:.0f}h)'
+            elif market_ghost:
+                # If market not in active scan AND it's been open more than 1 hour
+                if hold_hours > 1:
+                    should_close = True; close_reason = 'MARKET_RESOLVING (GHOST)'
 
             if should_close:
                 pnl = db_close_position(pos['id'], exit_price, close_reason)
@@ -773,9 +791,13 @@ def display_stats(st: dict, pm: 'PositionManager'):
 
     if pm.open_positions:
         print(f'\n  POSISI TERBUKA ({pm.count}):')
+        now = datetime.now(timezone.utc)
         for p in pm.open_positions:
-            print(f'    #{p["id"]} | {p["signal"][:12]} | {p["question"][:35]} | '
-                  f'Entry:{p["entry_price"]:.3f} | ${p["amount_usd"]:.2f} | {p["open_ts"][11:16]}')
+            dt = parse_iso_date(p.get('end_date'))
+            days_left = (dt - now).total_seconds() / 86400 if dt else None
+            sisa_str = format_sisa(days_left)
+            print(f'    #{p["id"]} | {p["signal"][:10]} | {p["question"][:35]} | '
+                  f'Entry:{p["entry_price"]:.3f} | Sisa:{sisa_str} | {p["open_ts"][11:16]}')
 
     if st['recent']:
         print('\n  RIWAYAT TERBARU:')
@@ -848,14 +870,17 @@ async def main():
             closed_this_scan = []
             try:
                 await pm.refresh()
+                
+                # Fetch markets FIRST so we know which are active
+                raw = await fetch_markets(session)
+                active_ids = {str(m.get('id', '')) for m in raw}
+                
                 if pm.open_positions:
-                    closed_this_scan = await pm.check_and_close(session)
+                    closed_this_scan = await pm.check_and_close(session, active_market_ids=active_ids)
                     if closed_this_scan:
                         await pm.refresh()
                         for c in closed_this_scan:
                             already_opened.discard(c['pos']['market_id'])
-
-                raw = await fetch_markets(session)
                 all_tids = []
                 for m in raw:
                     tids = parse_token_ids(m)
