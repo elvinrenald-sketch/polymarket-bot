@@ -648,11 +648,12 @@ class ProbabilityEstimator:
         estimated = max(0.02, min(0.98, estimated))
         divergence = estimated - market_price
         
-        # Confidence is LOW for generic because we have no external data
-        confidence = 0.3 * (1 - efficiency)  # Less confident in efficient markets
+        # Confidence untuk generic: base lebih tinggi, pasar efisien tetap bisa di-trade
+        # Bedanya: pasar sangat efisien punya divergence kecil, jadi won't pass divergence_ok anyway
+        confidence = 0.35 + (0.25 * min(1.0, vol_liq_ratio if liquidity>0 else 0))
         
         min_div = CATEGORY_THRESHOLDS['default']['min_divergence']
-        should_trade = abs(divergence) >= min_div and confidence >= 0.4
+        should_trade = abs(divergence) >= min_div and confidence >= 0.35
         
         result.update({
             'estimated_prob': round(estimated, 4),
@@ -1101,7 +1102,8 @@ class TradingBrain:
         # 6. ML prediction
         ml_score = self.model_mgr.predict(features)
         
-        # 7. GATE CHECKS — All must pass for auto-trade
+        # 7. GATE CHECKS
+        has_model = self.model_mgr.model is not None
         gate_results = {
             'liquidity_ok': liquidity >= thresholds['min_liquidity'],
             'volume_ok': volume_24h >= thresholds['min_volume'],
@@ -1110,28 +1112,35 @@ class TradingBrain:
             'confidence_ok': prob_analysis.get('confidence', 0) >= thresholds['min_confidence'],
             'volume_backed': vol_analysis.get('volume_backed', False),
             'spread_viable': spread_analysis.get('is_viable', False),
-            'ml_positive': ml_score >= 0.55,
-            'not_manipulated': vol_analysis.get('manipulation_risk', 100) < 60,
+            # ml_positive: hanya aktif jika model sudah terlatih
+            'ml_positive': (ml_score >= 0.55) if has_model else True,
+            'not_manipulated': vol_analysis.get('manipulation_risk', 100) < 70,
         }
         
         gates_passed = sum(1 for v in gate_results.values() if v)
         total_gates = len(gate_results)
         
-        # Final verdict
-        # STRICT: Need at least 7/9 gates to pass
-        should_trade = gates_passed >= 7 and gate_results['spread_ok'] and gate_results['not_manipulated']
+        # Final verdict: perlu 6/9 gates (lebih realistis saat belum ada model)
+        min_gates = 6 if not has_model else 7
+        should_trade = gates_passed >= min_gates and gate_results['spread_ok'] and gate_results['not_manipulated']
         
-        # For ARBITRAGE: bypass some gates (pure math opportunity)
-        if is_arb and signal_data.get('arb_profit', 0) > 0.5:
+        # For ARBITRAGE: bypass divergence/confidence gates
+        if is_arb and signal_data.get('arb_profit', 0) > 0.3:
             should_trade = gate_results['liquidity_ok'] and gate_results['spread_ok']
         
         # Calculate final confidence score (0-100)
+        has_model = self.model_mgr.model is not None
+        if has_model:
+            ml_weight = ml_score * 35
+        else:
+            # Belum ada model: ML tidak terlalu berpengaruh, fokus ke market quality
+            ml_weight = 0.5 * 15  # netral 15 poin
         brain_score = (
-            ml_score * 30 +
+            ml_weight +
             prob_analysis.get('confidence', 0) * 25 +
             (1 - vol_analysis.get('manipulation_risk', 50) / 100) * 20 +
             (1 - spread_analysis.get('toxicity_score', 50) / 100) * 15 +
-            (gates_passed / total_gates) * 10
+            (gates_passed / total_gates) * 25  # lebih tinggi bobot gate saat tidak ada model
         )
         brain_score = round(max(0, min(100, brain_score)), 1)
         

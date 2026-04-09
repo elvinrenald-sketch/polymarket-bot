@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-POLYMARKET FULL AUTO BOT v12.0 (INTELLIGENCE ENGINE)
+POLYMARKET FULL AUTO BOT v11.2
 ================================
 FIXES:
   - TERM env not set → Railway crash FIXED
@@ -104,22 +104,21 @@ CFG = {
     # Risk Management — aman untuk $10
     'BANKROLL'            : 10.00,
     'TRADE_PER_SIGNAL'    : 1.00,    # $1 per entry
-    'MAX_POSITIONS'       : 3,       # Lebih selektif       # Max 5 posisi terbuka
-    'MAX_EXPOSURE'        : 3.00,    # STOP buka posisi baru jika exposure >= $5
+    'MAX_POSITIONS'       : 5,       # Max 5 posisi terbuka
+    'MAX_EXPOSURE'        : 5.00,    # STOP buka posisi baru jika exposure >= $5
 
     # Auto-Close rules
-    'TAKE_PROFIT_PCT'     : 40.0,    # Close jika naik 50%
-    'STOP_LOSS_PCT'       : 25.0,    # KETAT    # Close jika turun 40%
+    'TAKE_PROFIT_PCT'     : 50.0,    # Close jika naik 50%
+    'STOP_LOSS_PCT'       : 40.0,    # Close jika turun 40%
     'TIME_EXIT_MINUTES'   : 45,      # Close jika sisa < 45 menit
     'FORCE_EXIT_MINUTES'  : 3,       # FORCE close jika sisa < 3 menit
-    'MAX_HOLD_HOURS'      : 48,      # Force close setelah 72 jam
-    'MIN_ML_CONFIDENCE'   : 55.0,    # Minimal skor dari Brain (0-100)
+    'MAX_HOLD_HOURS'      : 72,      # Force close setelah 72 jam
+    'MIN_ML_CONFIDENCE'   : 70.0,    # Minimal skor dari Brain (0-100)
 
     # Signal — hanya STRONG BUY & ARBITRAGE yang auto-open
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
     'MIN_MOMENTUM'        : 15.0,
-    'MIN_LIQUIDITY'       : 5000,    # STRICT
-    'MAX_SPREAD_PCT'      : 5.0,     # Skip toxic spreads    # STRICT
+    'MIN_LIQUIDITY'       : 2000,
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.25,
@@ -789,7 +788,7 @@ class PositionManager:
 def banner():
     mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
     print('=' * 70)
-    print('  POLYMARKET AUTO BOT v12.0 (INTELLIGENCE)')
+    print('  POLYMARKET AUTO BOT v11.2 (FIXED)')
     print(f'  Mode: {mode} | TPM: {CFG["TIME_EXIT_MINUTES"]}m | FEM: {CFG["FORCE_EXIT_MINUTES"]}m')
     print('=' * 70)
 
@@ -866,7 +865,7 @@ async def main():
         brain = TradingBrain(DB_PATH, MODEL_PATH)
 
     banner()
-    log.info('=== POLYMARKET AUTO BOT v12.0 (INTELLIGENCE) START ===')
+    log.info('=== POLYMARKET AUTO BOT v11.2 START ===')
     log.info(f'TIME_EXIT={CFG["TIME_EXIT_MINUTES"]}m | FORCE_EXIT={CFG["FORCE_EXIT_MINUTES"]}m | MAX_EXP=${CFG["MAX_EXPOSURE"]} | MAX_POS={CFG["MAX_POSITIONS"]}')
 
     history       : Dict[str, list] = {}
@@ -876,12 +875,12 @@ async def main():
     already_opened = db_get_open_market_ids()
 
     connector = aiohttp.TCPConnector(limit=50, limit_per_host=15, ttl_dns_cache=300, ssl=False)
-    hdrs = {'User-Agent': 'Mozilla/5.0 PolyBot/12.0', 'Accept': 'application/json'}
+    hdrs = {'User-Agent': 'Mozilla/5.0 PolyBot/11.2', 'Accept': 'application/json'}
 
     async with aiohttp.ClientSession(connector=connector, headers=hdrs) as session:
         if TELEGRAM_TOKEN:
             mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
-            await tg(session, f'<b>Polymarket Auto Bot v12.0 (Intelligence Engine)</b>\nMode: <b>{mode}</b>')
+            await tg(session, f'<b>Polymarket Auto Bot v11.2 Online (FIXED)!</b>\nMode: <b>{mode}</b>')
 
         while True:
             t0               = time.time()
@@ -913,11 +912,12 @@ async def main():
                     try:
                         r = process(m, history, clob_map)
                         if r:
-                            # Quick ML score (synchronous)
+                            # ML Prediction
                             if brain:
                                 r['brain_score'] = brain.predict_confidence(r)
                             else:
-                                r['brain_score'] = 50.0
+                                r['brain_score'] = 100.0
+
                             results.append(r)
                             new_hist[r['id']] = r['gamma_px']
                         else:
@@ -935,45 +935,19 @@ async def main():
                 scans += 1
                 ms     = int((time.time() - t0) * 1000)
 
-                # ── PRE-FILTER: basic sanity checks ─────────────
-                pre_candidates = [
+                auto_candidates = [
                     r for r in results
                     if r.get('is_auto')
                     and r['id'] not in already_opened
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
-                    and r.get('spread_pct', 100) <= 5.0
+                    and r.get('spread_pct', 100) <= 6.0
+                    and r.get('brain_score', 100) >= CFG['MIN_ML_CONFIDENCE']
                     and (r['days'] is None or r['days'] >= (CFG['TIME_EXIT_MINUTES'] * 2) / 1440)
                 ]
 
-                # ── DEEP ANALYSIS: verify with external data ────
-                auto_candidates = []
-                if brain and pre_candidates:
-                    for candidate in pre_candidates[:5]:
-                        try:
-                            analysis = await brain.analyze_signal(session, candidate)
-                            candidate['brain_analysis'] = analysis
-                            candidate['brain_score'] = analysis.get('brain_score', 0)
-                            candidate['should_trade'] = analysis.get('should_trade', False)
-                            candidate['gates'] = analysis.get('gates_passed', '0/0')
-
-                            if analysis.get('should_trade') and analysis.get('brain_score', 0) >= CFG['MIN_ML_CONFIDENCE']:
-                                auto_candidates.append(candidate)
-                                log.info(f"[BRAIN] APPROVED: {candidate['question'][:50]} | "
-                                         f"Score:{analysis['brain_score']:.0f} | "
-                                         f"Gates:{analysis['gates_passed']}")
-                            else:
-                                log.info(f"[BRAIN] REJECTED: {candidate['question'][:50]} | "
-                                         f"Score:{analysis['brain_score']:.0f} | "
-                                         f"Gates:{analysis['gates_passed']}")
-                        except Exception as e:
-                            log.debug(f'[BRAIN] Analysis error: {e}')
-
-                # Train Brain every 15 scans
-                if brain and scans % 15 == 0:
-                    try:
-                        await asyncio.to_thread(brain.train)
-                    except Exception:
-                        pass
+                # Run Brain Training every 10 scans
+                if brain and scans % 10 == 0:
+                    await asyncio.to_thread(brain.train)
 
                 if auto_candidates:
                     can, _ = pm.can_open()
