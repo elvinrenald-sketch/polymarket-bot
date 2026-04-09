@@ -101,28 +101,29 @@ CFG = {
     'DISPLAY_TOP'         : 10,
     'CLEAR_SCREEN'        : False,   # Railway tidak punya terminal
 
-    # Risk Management — aman untuk $10
-    'BANKROLL'            : 10.00,
-    'TRADE_PER_SIGNAL'    : 1.00,    # $1 per entry
-    'MAX_POSITIONS'       : 5,
-    'MAX_EXPOSURE'        : 5.00,    # STOP buka posisi baru jika exposure >= $5
+    # Risk Management — Dynamic Sizing
+    'BANKROLL'            : 10.00,     # Starting equity
+    'BET_PCT'             : 0.10,      # 10% of equity per trade ($10→$1, $20→$2)
+    'MIN_BET'             : 0.50,      # Minimum bet $0.50
+    'MAX_BET'             : 5.00,      # Maximum bet $5.00
+    'MAX_POSITIONS'       : 5,         # Max 5 concurrent positions
+    'MAX_EXPOSURE_PCT'    : 0.50,      # Max 50% of equity exposed
 
-    # Auto-Close rules
-    'TAKE_PROFIT_PCT'     : 45.0,    # Close @ 45% profit
-    'STOP_LOSS_PCT'       : 30.0,    # Stop loss 30%
-    'TIME_EXIT_MINUTES'   : 45,      # Close jika sisa < 45 menit
-    'FORCE_EXIT_MINUTES'  : 3,       # FORCE close jika sisa < 3 menit
-    'MAX_HOLD_HOURS'      : 48,      # Force close setelah 72 jam
-    'MIN_ML_CONFIDENCE'   : 55.0,    # Minimal skor dari Brain (0-100)
+    # Auto-Close rules — TAKE PROFIT EARLY, don't wait for resolution
+    'TAKE_PROFIT_PCT'     : 45.0,      # Close @ +45% profit (don't wait for market close!)
+    'STOP_LOSS_PCT'       : 30.0,      # Stop loss at -30%
+    'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
+    'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
+    'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
+    'MIN_ML_CONFIDENCE'   : 40.0,      # Brain score minimum for entry
 
-    # Signal — hanya STRONG BUY & ARBITRAGE yang auto-open
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'BUY', 'ARBITRAGE', 'EDGE'],  # Brain decides
-    'MIN_MOMENTUM'        : 5.0,          # Lowered, brain handles quality
-    'MIN_LIQUIDITY'       : 1000,    # Longgar, brain menilai secara detail
-    'MAX_SPREAD_PCT'      : 8.0,     # Hard limit, brain menilai secara detail    # STRICT
+    # Signal filters (Brain does the real filtering)
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
+    'MIN_MOMENTUM'        : 8.0,
+    'MIN_LIQUIDITY'       : 1000,
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
-    'KELLY_FRACTION'      : 0.25,
+    'KELLY_FRACTION'      : 0.15,
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -705,9 +706,23 @@ class PositionManager:
     def can_open(self) -> Tuple[bool, str]:
         if self.count >= CFG['MAX_POSITIONS']:
             return False, f"Max {CFG['MAX_POSITIONS']} posisi"
-        if self.total_exposure + CFG['TRADE_PER_SIGNAL'] > CFG['MAX_EXPOSURE']:
-            return False, f"Exposure penuh ${self.total_exposure:.2f}/${CFG['MAX_EXPOSURE']}"
+        # Dynamic exposure limit based on equity
+        equity = self._get_equity_fast()
+        max_exp = equity * CFG['MAX_EXPOSURE_PCT']
+        if self.total_exposure >= max_exp:
+            return False, f"Exposure penuh ${self.total_exposure:.2f}/${max_exp:.2f}"
         return True, 'OK'
+
+    def _get_equity_fast(self) -> float:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT COALESCE(SUM(pnl_usd), 0) FROM positions WHERE status='CLOSED'")
+            pnl = cur.fetchone()[0]
+            conn.close()
+            return max(1.0, CFG['BANKROLL'] + pnl)
+        except Exception:
+            return CFG['BANKROLL']
 
     async def check_and_close(self, session, active_market_ids: Optional[set] = None) -> List[dict]:
         closed_list = []
@@ -781,13 +796,32 @@ class PositionManager:
         if not can:
             log.info(f'SKIP OPEN: {why}')
             return None
-        amount = CFG['TRADE_PER_SIGNAL']
+        # ── DYNAMIC POSITION SIZING ──────────────────────────
+        # Calculate current equity = bankroll + total closed PnL
+        equity = self._calculate_equity()
+        amount = equity * CFG['BET_PCT']             # 10% of equity
+        amount = max(CFG['MIN_BET'], min(CFG['MAX_BET'], amount))
+        amount = round(amount, 2)
         entry  = r['entry_price']
         shares = amount / entry if entry > 0 else 0
+        log.info(f'[SIZE] Equity=${equity:.2f} → Bet=${amount:.2f} ({CFG["BET_PCT"]*100:.0f}%)')
         pos_id = db_open_position(r, amount, shares)
         await tg_open(session, r, pos_id, amount)
         await self.refresh()
         return pos_id
+
+    def _calculate_equity(self) -> float:
+        """Calculate current equity = bankroll + total realized PnL."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT COALESCE(SUM(pnl_usd), 0) FROM positions WHERE status='CLOSED'")
+            total_pnl = cur.fetchone()[0]
+            conn.close()
+            equity = CFG['BANKROLL'] + total_pnl
+            return max(1.0, equity)  # Never go below $1
+        except Exception:
+            return CFG['BANKROLL']
 
 # ══════════════════════════════════════════════════════════════════
 # DISPLAY
@@ -800,10 +834,14 @@ def banner():
     print('=' * 70)
 
 def display_stats(st: dict, pm: 'PositionManager'):
+    equity = pm._get_equity_fast()
+    next_bet = round(max(CFG['MIN_BET'], min(CFG['MAX_BET'], equity * CFG['BET_PCT'])), 2)
+    max_exp = equity * CFG['MAX_EXPOSURE_PCT']
     print(f'\n  JOURNAL: Total={st["total"]} | Open={pm.count}/{CFG["MAX_POSITIONS"]} | '
           f'Closed={st["closed"]} | Win={st["wins"]} | Loss={st["losses"]} | '
           f'WR={st["win_rate"]:.1f}% | P&L=${st["pnl"]:+.2f}')
-    print(f'  Exposure: ${pm.total_exposure:.2f}/${CFG["MAX_EXPOSURE"]:.0f} | '
+    print(f'  Equity: ${equity:.2f} | NextBet: ${next_bet:.2f} | '
+          f'Exposure: ${pm.total_exposure:.2f}/${max_exp:.2f} | '
           f'Slot: {CFG["MAX_POSITIONS"] - pm.count} tersisa')
 
     if pm.open_positions:
