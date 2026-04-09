@@ -104,8 +104,8 @@ CFG = {
     # Risk Management — aman untuk $10
     'BANKROLL'            : 10.00,
     'TRADE_PER_SIGNAL'    : 1.00,    # $1 per entry
-    'MAX_POSITIONS'       : 3,       # Lebih selektif       # Max 5 posisi terbuka
-    'MAX_EXPOSURE'        : 3.00,    # STOP buka posisi baru jika exposure >= $5
+    'MAX_POSITIONS'       : 5,
+    'MAX_EXPOSURE'        : 5.00,    # STOP buka posisi baru jika exposure >= $5
 
     # Auto-Close rules
     'TAKE_PROFIT_PCT'     : 40.0,    # Close jika naik 50%
@@ -116,10 +116,10 @@ CFG = {
     'MIN_ML_CONFIDENCE'   : 55.0,    # Minimal skor dari Brain (0-100)
 
     # Signal — hanya STRONG BUY & ARBITRAGE yang auto-open
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
-    'MIN_MOMENTUM'        : 15.0,
-    'MIN_LIQUIDITY'       : 5000,    # STRICT
-    'MAX_SPREAD_PCT'      : 5.0,     # Skip toxic spreads    # STRICT
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'BUY', 'ARBITRAGE', 'EDGE'],  # Brain decides
+    'MIN_MOMENTUM'        : 5.0,          # Lowered, brain handles quality
+    'MIN_LIQUIDITY'       : 1000,    # Longgar, brain menilai secara detail
+    'MAX_SPREAD_PCT'      : 8.0,     # Hard limit, brain menilai secara detail    # STRICT
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.25,
@@ -227,7 +227,23 @@ def init_db():
 
 def db_open_position(r: dict, amount: float, shares: float) -> int:
     ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    features = json.dumps(r) # Save the whole result as features
+    # Use brain's ML features if available, otherwise save basic info
+    if 'features_json' in r:
+        features = r['features_json']
+    else:
+        try:
+            features = json.dumps({
+                'entry_price': r.get('entry_price', 0),
+                'liquidity': r.get('liquidity', 0),
+                'volume_24h': r.get('volume_24h', 0),
+                'spread_pct': r.get('spread_pct', 0),
+                'momentum_pct': r.get('momentum_pct', 0),
+                'score': r.get('score', 0),
+                'brain_score': r.get('brain_score', 0),
+            })
+        except Exception:
+            features = '{}'
+
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
     cur.execute('''INSERT INTO positions
@@ -594,20 +610,21 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
     elif abs(mom_pct) >= 15:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
-        entry_name = d; is_strong = True
+        entry_name = d; is_strong = True; is_auto = True
 
     elif abs(mom_pct) >= 10 and vol_spike:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
-        entry_name = d; is_strong = True
+        entry_name = d; is_strong = True; is_auto = True
 
     elif vol_spike and near_res:
         signal = 'EDGE'; action = 'WATCH'; color = YY
+        is_auto = True  # Brain will verify
 
     elif abs(mom_pct) >= 5 and near_res:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'EDGE'; action = f'BUY {d[:10].upper()}'; color = YY
-        entry_name = d
+        entry_name = d; is_auto = True  # Brain will verify
 
     elif abs(mom_pct) >= 5:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
@@ -935,41 +952,48 @@ async def main():
                 scans += 1
                 ms     = int((time.time() - t0) * 1000)
 
-                # ── PRE-FILTER: basic sanity checks ─────────────
+                # ── PRE-FILTER: basic sanity ─────────────────
                 pre_candidates = [
                     r for r in results
                     if r.get('is_auto')
                     and r['id'] not in already_opened
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
-                    and r.get('spread_pct', 100) <= 5.0
-                    and (r['days'] is None or r['days'] >= (CFG['TIME_EXIT_MINUTES'] * 2) / 1440)
+                    and r.get('spread_pct', 100) <= CFG.get('MAX_SPREAD_PCT', 8.0)
+                    and (r['days'] is None or r['days'] >= 0.05)
                 ]
 
-                # ── DEEP ANALYSIS: verify with external data ────
+                # ── DEEP ANALYSIS with Brain ────────────────
                 auto_candidates = []
-                if brain and pre_candidates:
-                    for candidate in pre_candidates[:5]:
-                        try:
+                for candidate in pre_candidates[:8]:
+                    try:
+                        if brain:
                             analysis = await brain.analyze_signal(session, candidate)
-                            candidate['brain_analysis'] = analysis
-                            candidate['brain_score'] = analysis.get('brain_score', 0)
+                            smart = analysis.get('smart_score', 0)
+                            candidate['brain_score'] = smart
                             candidate['should_trade'] = analysis.get('should_trade', False)
-                            candidate['gates'] = analysis.get('gates_passed', '0/0')
+                            candidate['brain_analysis'] = analysis
 
-                            if analysis.get('should_trade') and analysis.get('brain_score', 0) >= CFG['MIN_ML_CONFIDENCE']:
+                            if analysis.get('should_trade') and smart >= CFG.get('MIN_BRAIN_SCORE', 50):
                                 auto_candidates.append(candidate)
+                                crypto_info = analysis.get('crypto_info', '')
                                 log.info(f"[BRAIN] APPROVED: {candidate['question'][:50]} | "
-                                         f"Score:{analysis['brain_score']:.0f} | "
-                                         f"Gates:{analysis['gates_passed']}")
+                                         f"Score:{smart:.0f} | {crypto_info[:60]}")
                             else:
-                                log.info(f"[BRAIN] REJECTED: {candidate['question'][:50]} | "
-                                         f"Score:{analysis['brain_score']:.0f} | "
-                                         f"Gates:{analysis['gates_passed']}")
-                        except Exception as e:
-                            log.debug(f'[BRAIN] Analysis error: {e}')
+                                reason = analysis.get('block_reason', '')
+                                log.info(f"[BRAIN] SKIP: {candidate['question'][:50]} | "
+                                         f"Score:{smart:.0f} | {reason}")
+                        else:
+                            # No brain — use basic filtering
+                            if candidate.get('score', 0) >= 100:
+                                auto_candidates.append(candidate)
+                    except Exception as e:
+                        log.debug(f'[BRAIN] Error: {e}')
 
-                # Train Brain every 15 scans
-                if brain and scans % 15 == 0:
+                # Sort by smart_score descending
+                auto_candidates.sort(key=lambda x: x.get('brain_score', 0), reverse=True)
+
+                # Train Brain every 20 scans
+                if brain and scans % 20 == 0:
                     try:
                         await asyncio.to_thread(brain.train)
                     except Exception:
@@ -979,9 +1003,14 @@ async def main():
                     can, _ = pm.can_open()
                     if can:
                         best = auto_candidates[0]
+                        # Save features for ML learning
+                        if brain and 'brain_analysis' in best:
+                            best['features_json'] = json.dumps(
+                                best['brain_analysis'].get('features', {}))
                         pos_id = await pm.open_position(session, best)
                         if pos_id:
                             already_opened.add(best['id'])
+
 
                 try:
                     c2 = sqlite3.connect(DB_PATH)

@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-POLYMARKET INTELLIGENCE ENGINE v3.0
+POLYMARKET INTELLIGENCE ENGINE v4.0
 ====================================
-Advanced Machine Learning + Real-World Data Verification System
+Complete rewrite — designed to ACTUALLY WORK.
 
-This module provides:
-1. External price feeds (CoinGecko for crypto assets)
-2. Real-world probability estimation (is the market ACTUALLY mispriced?)
-3. Category-specific analysis strategies
-4. Multi-factor ML scoring with Random Forest ensemble
-5. Contrarian signal detection (crowd is wrong + data proves it)
-6. Historical pattern matching and win/loss learning
-7. Spread toxicity analysis
-8. Volume profile verification
+Previous versions had 9 gates that all blocked each other, resulting
+in ZERO entries across hundreds of scans. This version uses a
+SCORING system instead of gates: every market gets a score (0-100),
+and we only trade the highest-scoring ones.
 
-The core principle: DON'T just buy because price moved.
-Buy because REALITY disagrees with the market AND we can prove it.
+Core principles:
+1. SCORE, don't GATE — everything contributes to a final number
+2. External data verification for crypto (CoinGecko)
+3. Whale detection via volume spikes
+4. Learn from wins/losses with Gradient Boosting
+5. Category-aware analysis
+6. Spread cost awareness (don't trade if spread eats the edge)
 """
 
 import os
@@ -23,7 +23,6 @@ import json
 import math
 import sqlite3
 import logging
-import hashlib
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Tuple, Any
@@ -41,7 +40,7 @@ except ImportError:
     HAS_PANDAS = False
 
 try:
-    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+    from sklearn.ensemble import GradientBoostingClassifier
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import cross_val_score
     from joblib import dump, load
@@ -51,212 +50,129 @@ except ImportError:
 
 log = logging.getLogger('poly.brain')
 
-# ══════════════════════════════════════════════════════════════════
-# CONSTANTS
-# ══════════════════════════════════════════════════════════════════
-CRYPTO_KEYWORDS = [
-    'bitcoin', 'btc', 'ethereum', 'eth', 'solana', 'sol', 'xrp',
-    'dogecoin', 'doge', 'cardano', 'ada', 'polygon', 'matic',
-    'avalanche', 'avax', 'chainlink', 'link', 'polkadot', 'dot',
-    'litecoin', 'ltc', 'crypto', 'binance', 'coinbase',
-]
 
-CRYPTO_COINGECKO_MAP = {
-    'btc': 'bitcoin', 'bitcoin': 'bitcoin',
-    'eth': 'ethereum', 'ethereum': 'ethereum',
-    'sol': 'solana', 'solana': 'solana',
+# ══════════════════════════════════════════════════════════════════
+# CRYPTO PRICE FEEDS
+# ══════════════════════════════════════════════════════════════════
+CRYPTO_MAP = {
+    'bitcoin': 'bitcoin', 'btc': 'bitcoin',
+    'ethereum': 'ethereum', 'eth': 'ethereum', 'ether': 'ethereum',
+    'solana': 'solana', 'sol': 'solana',
     'xrp': 'ripple', 'ripple': 'ripple',
-    'doge': 'dogecoin', 'dogecoin': 'dogecoin',
-    'ada': 'cardano', 'cardano': 'cardano',
-    'matic': 'matic-network', 'polygon': 'matic-network',
-    'avax': 'avalanche-2', 'avalanche': 'avalanche-2',
-    'link': 'chainlink', 'chainlink': 'chainlink',
-    'dot': 'polkadot', 'polkadot': 'polkadot',
-    'ltc': 'litecoin', 'litecoin': 'litecoin',
+    'dogecoin': 'dogecoin', 'doge': 'dogecoin',
+    'cardano': 'cardano', 'ada': 'cardano',
+    'polygon': 'matic-network', 'matic': 'matic-network',
+    'avalanche': 'avalanche-2', 'avax': 'avalanche-2',
+    'chainlink': 'chainlink', 'link': 'chainlink',
+    'polkadot': 'polkadot', 'dot': 'polkadot',
+    'litecoin': 'litecoin', 'ltc': 'litecoin',
+    'bnb': 'binancecoin', 'binance coin': 'binancecoin',
+    'tron': 'tron', 'trx': 'tron',
+    'shiba': 'shiba-inu', 'shib': 'shiba-inu',
+    'pepe': 'pepe',
+    'sui': 'sui',
 }
 
+CRYPTO_KEYWORDS = list(CRYPTO_MAP.keys()) + ['crypto', 'coin', 'token', 'defi']
+
 SPORTS_KEYWORDS = [
-    'win', 'beat', 'defeat', 'match', 'game', 'score', 'playoff',
-    'championship', 'league', 'cup', 'tournament', 'vs', 'fc',
-    'nba', 'nfl', 'mlb', 'nhl', 'premier league', 'la liga',
-    'champions league', 'world cup', 'serie a', 'bundesliga',
-    'counter-strike', 'dota', 'valorant', 'esport',
+    'win', 'beat', 'defeat', 'match', 'game', 'playoff', 'championship',
+    'league', 'cup', 'tournament', 'vs', 'fc', 'nba', 'nfl', 'mlb',
+    'nhl', 'premier league', 'la liga', 'bundesliga', 'serie a',
+    'champions league', 'world cup', 'ufc', 'boxing',
+    'counter-strike', 'dota', 'valorant', 'esport', 'csgo', 'cs2',
+    'trail blazers', 'lakers', 'celtics', 'warriors', 'nuggets',
+    'grizzlies', 'spurs', 'thunder', 'suns', 'clippers', 'bucks',
+    'heat', 'knicks', 'nets', 'bulls', 'cavaliers', 'mavericks',
+    'rockets', 'pacers', 'hawks', 'pistons', 'magic', 'kings',
+    'raptors', 'timberwolves', 'pelicans', 'hornets', 'wizards',
+    'spread', 'over/under', 'o/u', 'moneyline', 'total points',
+    'prop', 'rebounds', 'assists', 'strikeout',
 ]
 
 POLITICS_KEYWORDS = [
-    'president', 'election', 'vote', 'senator', 'congress',
-    'governor', 'trump', 'biden', 'democrat', 'republican',
-    'poll', 'primary', 'cabinet', 'impeach', 'legislation',
+    'president', 'election', 'vote', 'senator', 'congress', 'governor',
+    'trump', 'biden', 'democrat', 'republican', 'poll', 'primary',
+    'cabinet', 'impeach', 'legislation', 'midterm', 'ballot',
 ]
 
-# Minimum thresholds for different categories
-CATEGORY_THRESHOLDS = {
-    'crypto': {
-        'min_liquidity': 5000,
-        'min_volume': 2000,
-        'max_spread_pct': 4.0,
-        'min_divergence': 0.08,     # 8% divergence between market and reality
-        'min_confidence': 0.65,
-    },
-    'sports': {
-        'min_liquidity': 3000,
-        'min_volume': 1000,
-        'max_spread_pct': 5.0,
-        'min_divergence': 0.10,
-        'min_confidence': 0.60,
-    },
-    'politics': {
-        'min_liquidity': 10000,
-        'min_volume': 5000,
-        'max_spread_pct': 3.0,
-        'min_divergence': 0.12,
-        'min_confidence': 0.70,
-    },
-    'default': {
-        'min_liquidity': 5000,
-        'min_volume': 2000,
-        'max_spread_pct': 5.0,
-        'min_divergence': 0.10,
-        'min_confidence': 0.65,
-    },
-}
-
-# Feature names for ML model (order matters!)
-FEATURE_NAMES = [
-    'entry_price',
-    'liquidity_log',
-    'volume_log',
-    'spread_pct',
-    'momentum_pct',
-    'days_left',
-    'vol_liq_ratio',
-    'price_distance_from_50',
-    'category_code',
-    'is_arb',
-    'volume_spike',
-    'near_resolution',
-    'price_volatility',
-    'market_efficiency',
-    'crowd_agreement',
-    'external_divergence',
-]
+# Cache for external data (avoids rate limiting)
+_price_cache: Dict[str, Tuple[float, Dict]] = {}
+_CACHE_TTL = 120  # 2 minutes
 
 
 # ══════════════════════════════════════════════════════════════════
 # CATEGORY DETECTION
 # ══════════════════════════════════════════════════════════════════
 def detect_category(question: str) -> str:
-    """Detect market category from the question text."""
+    """Detect what type of market this is."""
     q = question.lower()
-    
-    crypto_score = sum(1 for kw in CRYPTO_KEYWORDS if kw in q)
-    sports_score = sum(1 for kw in SPORTS_KEYWORDS if kw in q)
-    politics_score = sum(1 for kw in POLITICS_KEYWORDS if kw in q)
-    
-    scores = {
-        'crypto': crypto_score,
-        'sports': sports_score,
-        'politics': politics_score,
-    }
-    
+    crypto = sum(1 for kw in CRYPTO_KEYWORDS if kw in q)
+    sports = sum(1 for kw in SPORTS_KEYWORDS if kw in q)
+    politics = sum(1 for kw in POLITICS_KEYWORDS if kw in q)
+    scores = {'crypto': crypto, 'sports': sports, 'politics': politics}
     best = max(scores, key=scores.get)
-    if scores[best] >= 2:
-        return best
-    if scores[best] == 1:
-        return best
-    return 'default'
+    return best if scores[best] >= 1 else 'general'
 
 
-def extract_crypto_asset(question: str) -> Optional[str]:
-    """Extract the crypto asset being referenced in the question."""
+def find_crypto_id(question: str) -> Optional[str]:
+    """Find which crypto asset is being discussed."""
     q = question.lower()
-    for keyword, coingecko_id in CRYPTO_COINGECKO_MAP.items():
+    for keyword, cg_id in CRYPTO_MAP.items():
         if keyword in q:
-            return coingecko_id
+            return cg_id
     return None
 
 
 def extract_price_target(question: str) -> Optional[float]:
-    """Extract a price target from the question (e.g., 'BTC above $70,000')."""
-    q = question.lower().replace(',', '')
-    
-    # Match patterns like "$70000", "$70,000", "70000 dollars", "$70k"
+    """Extract dollar price target from question."""
+    q = question.lower().replace(',', '').replace(' ', '')
     patterns = [
-        r'\$(\d+(?:\.\d+)?)\s*k\b',        # $70k
-        r'\$(\d+(?:\.\d+)?)\b',              # $70000
-        r'(\d+(?:\.\d+)?)\s*(?:usd|dollars)', # 70000 usd
+        r'\$(\d+\.?\d*)k\b',   # $70k
+        r'\$(\d+\.?\d*)\b',     # $70000
+        r'(\d+\.?\d*)\s*usd',   # 70000 usd
     ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, q)
-        if match:
-            val = float(match.group(1))
-            # Handle k suffix
-            if 'k' in q[match.start():match.end()+1].lower():
+    for pat in patterns:
+        m = re.search(pat, q)
+        if m:
+            val = float(m.group(1))
+            if val < 500:  # likely "k" notation
                 val *= 1000
             return val
     return None
 
 
-def extract_direction(question: str) -> Optional[str]:
-    """Extract the direction being asked about (up/above vs down/below)."""
+def extract_direction(question: str) -> str:
+    """Is this asking about up or down?"""
     q = question.lower()
-    
-    up_words = ['above', 'over', 'exceed', 'reach', 'hit', 'surpass', 'up']
-    down_words = ['below', 'under', 'dip', 'drop', 'fall', 'down', 'crash']
-    
-    up_score = sum(1 for w in up_words if w in q)
-    down_score = sum(1 for w in down_words if w in q)
-    
-    if up_score > down_score:
+    up = sum(1 for w in ['above', 'over', 'exceed', 'reach', 'hit', 'up', 'high'] if w in q)
+    down = sum(1 for w in ['below', 'under', 'dip', 'drop', 'fall', 'down', 'crash', 'low'] if w in q)
+    if up > down:
         return 'up'
-    elif down_score > up_score:
+    elif down > up:
         return 'down'
-    return None
+    return 'unknown'
 
 
 # ══════════════════════════════════════════════════════════════════
 # EXTERNAL DATA FETCHER
 # ══════════════════════════════════════════════════════════════════
-class ExternalDataCache:
-    """Cache external API data to avoid rate limiting."""
-    
-    def __init__(self, ttl_seconds: int = 60):
-        self._cache: Dict[str, Tuple[float, Any]] = {}
-        self._ttl = ttl_seconds
-    
-    def get(self, key: str) -> Optional[Any]:
-        if key in self._cache:
-            ts, data = self._cache[key]
-            if (datetime.now(timezone.utc).timestamp() - ts) < self._ttl:
-                return data
-        return None
-    
-    def set(self, key: str, value: Any):
-        self._cache[key] = (datetime.now(timezone.utc).timestamp(), value)
-    
-    def clear_expired(self):
-        now = datetime.now(timezone.utc).timestamp()
-        expired = [k for k, (ts, _) in self._cache.items() if now - ts > self._ttl * 5]
-        for k in expired:
-            del self._cache[k]
-
-
-_ext_cache = ExternalDataCache(ttl_seconds=90)
-
-
-async def fetch_crypto_price(session, coingecko_id: str) -> Optional[Dict]:
+async def fetch_crypto_data(session, coingecko_id: str) -> Optional[Dict]:
     """
-    Fetch current crypto price + 24h change from CoinGecko.
-    Returns: {price, change_24h, volume_24h, market_cap, high_24h, low_24h}
+    Fetch real-time crypto price data from CoinGecko.
+    Returns: {price, change_24h, volume_24h, market_cap}
+    Uses caching to avoid rate limits.
     """
-    cache_key = f'crypto_{coingecko_id}'
-    cached = _ext_cache.get(cache_key)
-    if cached:
-        return cached
-    
+    global _price_cache
+    now = datetime.now(timezone.utc).timestamp()
+
+    if coingecko_id in _price_cache:
+        ts, data = _price_cache[coingecko_id]
+        if now - ts < _CACHE_TTL:
+            return data
+
     try:
-        url = f'https://api.coingecko.com/api/v3/simple/price'
+        url = 'https://api.coingecko.com/api/v3/simple/price'
         params = {
             'ids': coingecko_id,
             'vs_currencies': 'usd',
@@ -266,667 +182,417 @@ async def fetch_crypto_price(session, coingecko_id: str) -> Optional[Dict]:
         }
         async with session.get(url, params=params, timeout=8) as r:
             if r.status == 200:
-                data = await r.json()
-                if coingecko_id in data:
-                    info = data[coingecko_id]
+                raw = await r.json()
+                if coingecko_id in raw:
+                    info = raw[coingecko_id]
                     result = {
                         'price': info.get('usd', 0),
                         'change_24h': info.get('usd_24h_change', 0),
                         'volume_24h': info.get('usd_24h_vol', 0),
                         'market_cap': info.get('usd_market_cap', 0),
                     }
-                    _ext_cache.set(cache_key, result)
-                    log.info(f"[EXT] {coingecko_id}: ${result['price']:,.2f} ({result['change_24h']:+.2f}%)")
+                    _price_cache[coingecko_id] = (now, result)
+                    log.info(f"[EXT] {coingecko_id}: ${result['price']:,.2f} "
+                             f"({result['change_24h']:+.1f}%)")
                     return result
     except Exception as e:
-        log.debug(f'[EXT] CoinGecko error for {coingecko_id}: {e}')
+        log.debug(f'[EXT] CoinGecko error: {e}')
     return None
 
 
-async def fetch_crypto_trend(session, coingecko_id: str, hours: int = 6) -> Optional[Dict]:
-    """
-    Fetch short-term price trend from CoinGecko.
-    Returns: {trend: 'up'|'down'|'flat', strength: float, prices: list}
-    """
-    cache_key = f'trend_{coingecko_id}_{hours}'
-    cached = _ext_cache.get(cache_key)
-    if cached:
-        return cached
-    
+async def fetch_crypto_trend(session, coingecko_id: str) -> Optional[Dict]:
+    """Fetch 24h price trend data."""
+    cache_key = f'trend_{coingecko_id}'
+    now = datetime.now(timezone.utc).timestamp()
+    if cache_key in _price_cache:
+        ts, data = _price_cache[cache_key]
+        if now - ts < _CACHE_TTL * 2:
+            return data
+
     try:
         url = f'https://api.coingecko.com/api/v3/coins/{coingecko_id}/market_chart'
         params = {'vs_currency': 'usd', 'days': '1'}
         async with session.get(url, params=params, timeout=10) as r:
             if r.status == 200:
                 data = await r.json()
-                prices_raw = data.get('prices', [])
-                if len(prices_raw) < 10:
+                prices = [p[1] for p in data.get('prices', [])]
+                if len(prices) < 10:
                     return None
-                
-                prices = [p[1] for p in prices_raw]
-                
-                # Get recent slice (last N hours)
-                slice_size = max(4, int(len(prices) * hours / 24))
-                recent = prices[-slice_size:]
-                
-                if len(recent) < 3:
-                    return None
-                
-                # Calculate trend
-                start_price = recent[0]
-                end_price = recent[-1]
-                mid_price = recent[len(recent) // 2]
-                
-                change_pct = (end_price - start_price) / start_price * 100
-                
-                # Calculate momentum (is it accelerating?)
-                first_half_change = (mid_price - start_price) / start_price * 100
-                second_half_change = (end_price - mid_price) / mid_price * 100
-                
-                # Volatility
-                if HAS_NUMPY:
-                    returns = [
-                        (recent[i] - recent[i-1]) / recent[i-1]
-                        for i in range(1, len(recent))
-                    ]
-                    volatility = float(np.std(returns)) * 100
-                else:
-                    volatility = abs(change_pct) / 2
-                
-                if change_pct > 1.5:
+
+                recent_6h = prices[-(len(prices) // 4):]
+                recent_1h = prices[-(len(prices) // 24):]
+
+                start = recent_6h[0]
+                end = recent_6h[-1]
+                change_6h = (end - start) / start * 100
+
+                start_1h = recent_1h[0]
+                change_1h = (end - start_1h) / start_1h * 100
+
+                hi = max(recent_6h)
+                lo = min(recent_6h)
+                volatility = (hi - lo) / lo * 100 if lo > 0 else 0
+
+                # Is momentum accelerating?
+                mid_idx = len(recent_6h) // 2
+                first_half = (recent_6h[mid_idx] - recent_6h[0]) / recent_6h[0] * 100
+                second_half = (recent_6h[-1] - recent_6h[mid_idx]) / recent_6h[mid_idx] * 100
+                accelerating = abs(second_half) > abs(first_half) * 1.2
+
+                if change_6h > 1.0:
                     trend = 'up'
-                elif change_pct < -1.5:
+                elif change_6h < -1.0:
                     trend = 'down'
                 else:
                     trend = 'flat'
-                
-                accelerating = abs(second_half_change) > abs(first_half_change) * 1.3
-                
+
                 result = {
                     'trend': trend,
-                    'change_pct': round(change_pct, 3),
-                    'strength': round(abs(change_pct), 3),
-                    'volatility': round(volatility, 3),
+                    'change_6h': round(change_6h, 2),
+                    'change_1h': round(change_1h, 2),
+                    'volatility': round(volatility, 2),
                     'accelerating': accelerating,
-                    'current_price': end_price,
-                    'period_high': max(recent),
-                    'period_low': min(recent),
-                    'first_half_chg': round(first_half_change, 3),
-                    'second_half_chg': round(second_half_change, 3),
+                    'current': end,
+                    'high_6h': hi,
+                    'low_6h': lo,
                 }
-                _ext_cache.set(cache_key, result)
+                _price_cache[cache_key] = (now, result)
                 return result
     except Exception as e:
-        log.debug(f'[EXT] CoinGecko trend error: {e}')
+        log.debug(f'[EXT] Trend error: {e}')
     return None
 
 
 # ══════════════════════════════════════════════════════════════════
-# PROBABILITY ESTIMATOR
+# SMART SCORING ENGINE (replaces the broken gate system)
 # ══════════════════════════════════════════════════════════════════
-class ProbabilityEstimator:
+class SmartScorer:
     """
-    Estimates the REAL probability of a market outcome.
-    This is the core of the "smart" entry system.
-    
-    Instead of just looking at price movements on Polymarket,
-    we cross-reference with real-world data to determine if
-    the market is actually mispriced.
+    Instead of binary gates that block everything, this uses a
+    weighted scoring system. Every aspect of a trade contributes
+    positively or negatively to the final score.
+
+    Score range: 0-100
+    Trade threshold: configurable (default 50)
     """
-    
+
     @staticmethod
-    async def estimate_crypto_probability(
+    def score_liquidity(liquidity: float) -> float:
+        """Higher liquidity = safer market = higher score."""
+        if liquidity >= 50000:
+            return 20.0
+        elif liquidity >= 20000:
+            return 17.0
+        elif liquidity >= 10000:
+            return 15.0
+        elif liquidity >= 5000:
+            return 12.0
+        elif liquidity >= 2000:
+            return 8.0
+        elif liquidity >= 1000:
+            return 5.0
+        else:
+            return 0.0
+
+    @staticmethod
+    def score_volume(volume_24h: float, liquidity: float) -> float:
+        """
+        Volume relative to liquidity tells us if the market is active.
+        Also detects whale activity (sudden volume spikes).
+        """
+        if liquidity <= 0:
+            return 0.0
+        ratio = volume_24h / liquidity
+        # Whale detection: very high vol/liq means big players are moving
+        if ratio >= 5.0:
+            return 15.0  # Whale alert!
+        elif ratio >= 2.0:
+            return 12.0
+        elif ratio >= 1.0:
+            return 10.0
+        elif ratio >= 0.5:
+            return 7.0
+        elif ratio >= 0.2:
+            return 4.0
+        else:
+            return 1.0
+
+    @staticmethod
+    def score_spread(spread_pct: float) -> float:
+        """
+        Low spread = healthy market = can actually profit.
+        High spread = toxic = almost impossible to profit.
+        """
+        if spread_pct <= 1.0:
+            return 15.0
+        elif spread_pct <= 2.0:
+            return 12.0
+        elif spread_pct <= 3.0:
+            return 10.0
+        elif spread_pct <= 5.0:
+            return 6.0
+        elif spread_pct <= 8.0:
+            return 2.0
+        else:
+            return -10.0  # PENALTY: toxic spread
+
+    @staticmethod
+    def score_momentum(momentum_pct: float) -> float:
+        """
+        Strong momentum = potential mispricing opportunity.
+        But TOO strong might be manipulation.
+        """
+        abs_mom = abs(momentum_pct)
+        if abs_mom >= 30:
+            return 10.0  # Could be manipulation, moderate score
+        elif abs_mom >= 20:
+            return 15.0  # Strong signal
+        elif abs_mom >= 15:
+            return 13.0
+        elif abs_mom >= 10:
+            return 10.0
+        elif abs_mom >= 5:
+            return 5.0
+        else:
+            return 0.0
+
+    @staticmethod
+    def score_time_to_expiry(days_left: Optional[float]) -> float:
+        """
+        Markets near expiry have clearer outcomes.
+        But too close = no time to profit.
+        """
+        if days_left is None:
+            return 3.0  # Unknown, neutral
+        if days_left < 0.042:   # < 1 hour
+            return -5.0  # Too close, risky
+        elif days_left < 0.25:  # < 6 hours
+            return 10.0  # Sweet spot: outcome becoming clear
+        elif days_left < 1.0:   # < 1 day
+            return 8.0
+        elif days_left < 7:
+            return 5.0
+        elif days_left < 30:
+            return 3.0
+        else:
+            return 1.0  # Too far out
+
+    @staticmethod
+    def score_entry_price(entry_price: float) -> float:
+        """
+        Extreme prices (near 0 or 1) have higher potential payout.
+        But also higher risk if wrong.
+        Prices near 0.5 have lowest edge.
+        """
+        # Distance from 0.5 — further = more conviction in the market
+        dist = abs(entry_price - 0.5)
+        if entry_price < 0.15 or entry_price > 0.85:
+            return 8.0  # High conviction, big potential
+        elif entry_price < 0.25 or entry_price > 0.75:
+            return 5.0
+        elif entry_price < 0.35 or entry_price > 0.65:
+            return 3.0
+        else:
+            return 0.0  # Near 50/50, no edge
+
+    @staticmethod
+    async def score_crypto_divergence(
         session,
         question: str,
-        market_price: float,  # Current Polymarket price (0-1)
-        outcome: str,         # "Yes" or "No" or specific outcome
-    ) -> Dict:
-        """
-        For crypto markets: estimate real probability by checking actual prices.
-        
-        Example:
-        - Market: "Will BTC be above $70K by April 15?"
-        - Market price: 0.35 (market thinks 35% chance)
-        - BTC current price: $68,500 (+2.3% today, trending up)
-        - Our estimate: Maybe 55% chance → MISPRICED BY 20%!
-        """
-        result = {
-            'estimated_prob': market_price,  # Default: agree with market
-            'divergence': 0.0,
-            'confidence': 0.0,
-            'reasoning': '',
-            'external_data': None,
-            'should_trade': False,
-            'recommended_side': None,
-        }
-        
-        # Extract crypto asset
-        crypto_id = extract_crypto_asset(question)
-        if not crypto_id:
-            result['reasoning'] = 'Could not identify crypto asset'
-            return result
-        
-        # Fetch current price and trend
-        current_data = await fetch_crypto_price(session, crypto_id)
-        trend_data = await fetch_crypto_trend(session, crypto_id, hours=6)
-        
-        if not current_data:
-            result['reasoning'] = f'Could not fetch price for {crypto_id}'
-            return result
-        
-        result['external_data'] = {
-            'current': current_data,
-            'trend': trend_data,
-        }
-        
-        current_price = current_data['price']
-        change_24h = current_data.get('change_24h', 0)
-        
-        # Extract target price from question
-        target_price = extract_price_target(question)
-        direction = extract_direction(question)
-        
-        if target_price and target_price > 0:
-            # Calculate distance to target
-            distance_pct = (target_price - current_price) / current_price * 100
-            
-            # Base probability estimation using distance
-            if direction in ('up', None):
-                # "Will BTC go ABOVE $X?"
-                if current_price >= target_price:
-                    # Already above target → high probability
-                    estimated = min(0.92, 0.75 + abs(distance_pct) * 0.01)
-                else:
-                    # Below target → depends on distance and momentum
-                    if abs(distance_pct) < 2:
-                        estimated = 0.55  # Very close, could go either way
-                    elif abs(distance_pct) < 5:
-                        estimated = 0.40
-                    elif abs(distance_pct) < 10:
-                        estimated = 0.25
-                    elif abs(distance_pct) < 20:
-                        estimated = 0.12
-                    else:
-                        estimated = 0.05  # Very far away
-                    
-                    # Adjust for trend
-                    if trend_data:
-                        if trend_data['trend'] == 'up':
-                            estimated *= (1 + trend_data['strength'] * 0.03)
-                            if trend_data['accelerating']:
-                                estimated *= 1.15
-                        elif trend_data['trend'] == 'down':
-                            estimated *= (1 - trend_data['strength'] * 0.02)
-                    
-                    # Adjust for 24h momentum
-                    if change_24h > 3:
-                        estimated *= 1.20
-                    elif change_24h > 1:
-                        estimated *= 1.08
-                    elif change_24h < -3:
-                        estimated *= 0.80
-                    elif change_24h < -1:
-                        estimated *= 0.92
-                    
-            elif direction == 'down':
-                # "Will BTC DIP below $X?"
-                if current_price <= target_price:
-                    estimated = min(0.92, 0.75 + abs(distance_pct) * 0.01)
-                else:
-                    if abs(distance_pct) < 2:
-                        estimated = 0.50
-                    elif abs(distance_pct) < 5:
-                        estimated = 0.35
-                    elif abs(distance_pct) < 10:
-                        estimated = 0.20
-                    elif abs(distance_pct) < 20:
-                        estimated = 0.10
-                    else:
-                        estimated = 0.05
-                    
-                    # For "down" direction: bearish trend HELPS
-                    if trend_data:
-                        if trend_data['trend'] == 'down':
-                            estimated *= (1 + trend_data['strength'] * 0.03)
-                            if trend_data['accelerating']:
-                                estimated *= 1.15
-                        elif trend_data['trend'] == 'up':
-                            estimated *= (1 - trend_data['strength'] * 0.02)
-                    
-                    if change_24h < -3:
-                        estimated *= 1.20
-                    elif change_24h < -1:
-                        estimated *= 1.08
-                    elif change_24h > 3:
-                        estimated *= 0.80
-                    elif change_24h > 1:
-                        estimated *= 0.92
-            else:
-                estimated = market_price  # Can't determine direction
-            
-            estimated = max(0.02, min(0.98, estimated))
-            
-        else:
-            # No target price found → use general crypto sentiment
-            # For "up or down" style markets, use 24h trend
-            if direction == 'up':
-                if change_24h > 2:
-                    estimated = 0.60
-                elif change_24h > 0:
-                    estimated = 0.52
-                elif change_24h < -2:
-                    estimated = 0.38
-                else:
-                    estimated = 0.48
-            elif direction == 'down':
-                if change_24h < -2:
-                    estimated = 0.60
-                elif change_24h < 0:
-                    estimated = 0.52
-                elif change_24h > 2:
-                    estimated = 0.38
-                else:
-                    estimated = 0.48
-            else:
-                estimated = market_price
-        
-        # Calculate divergence
-        divergence = estimated - market_price
-        abs_divergence = abs(divergence)
-        
-        # Confidence in our estimate (higher with more data points)
-        confidence = 0.3  # Base confidence
-        if trend_data:
-            confidence += 0.25
-            if trend_data['volatility'] < 2:
-                confidence += 0.1  # Low vol = more predictable
-        if target_price:
-            confidence += 0.2
-        if abs(change_24h) > 1:
-            confidence += 0.15  # Clear momentum signal
-        confidence = min(0.95, confidence)
-        
-        # Determine if we should trade
-        min_div = CATEGORY_THRESHOLDS['crypto']['min_divergence']
-        should_trade = abs_divergence >= min_div and confidence >= 0.55
-        
-        # Determine which side to buy
-        if should_trade:
-            if divergence > 0:
-                # Real prob > market price → buy YES side
-                recommended = 'YES'
-            else:
-                # Real prob < market price → buy NO side  
-                recommended = 'NO'
-        else:
-            recommended = None
-        
-        reasoning_parts = [
-            f'Asset: {crypto_id}',
-            f'Current: ${current_price:,.2f}',
-            f'24h Change: {change_24h:+.2f}%',
-        ]
-        if target_price:
-            reasoning_parts.append(f'Target: ${target_price:,.2f} (distance: {distance_pct:+.1f}%)')
-        if trend_data:
-            reasoning_parts.append(f'6h Trend: {trend_data["trend"]} ({trend_data["change_pct"]:+.2f}%)')
-        reasoning_parts.append(f'Market says: {market_price:.1%} | We estimate: {estimated:.1%}')
-        reasoning_parts.append(f'Divergence: {divergence:+.1%} | Confidence: {confidence:.1%}')
-        
-        result.update({
-            'estimated_prob': round(estimated, 4),
-            'divergence': round(divergence, 4),
-            'confidence': round(confidence, 4),
-            'reasoning': ' | '.join(reasoning_parts),
-            'should_trade': should_trade,
-            'recommended_side': recommended,
-        })
-        
-        return result
-    
-    @staticmethod
-    async def estimate_generic_probability(
-        question: str,
         market_price: float,
-        liquidity: float,
-        volume_24h: float,
-        days_left: Optional[float],
-        momentum_pct: float,
-    ) -> Dict:
+        entry_outcome: str,
+    ) -> Tuple[float, str]:
         """
-        For non-crypto markets: use market microstructure signals.
-        
-        Key insight: In highly liquid markets with strong volume,
-        the price is usually correct. We only look for edge in
-        less-efficient markets where crowd might be wrong.
+        THE KEY FUNCTION: Check if Polymarket price disagrees with reality.
+        Returns (score_bonus, reasoning_string).
         """
-        result = {
-            'estimated_prob': market_price,
-            'divergence': 0.0,
-            'confidence': 0.0,
-            'reasoning': 'Generic estimation',
-            'external_data': None,
-            'should_trade': False,
-            'recommended_side': None,
-        }
-        
-        # Market efficiency metric
-        # High liquidity + high volume = efficient market = hard to beat
-        efficiency = 0.0
-        if liquidity > 0:
-            vol_liq_ratio = volume_24h / liquidity if liquidity > 0 else 0
-            efficiency = min(1.0, math.log10(max(liquidity, 1)) / 6)  # 0-1 scale
-        
-        # Time pressure analysis
-        time_factor = 1.0
-        if days_left is not None:
-            if days_left < 0.042:    # < 1 hour
-                time_factor = 1.5    # Prices converge fast near resolution
-            elif days_left < 0.25:   # < 6 hours
-                time_factor = 1.2
-            elif days_left > 30:
-                time_factor = 0.7    # Far out = less predictable
-        
-        # Momentum-based probability adjustment
-        # If price has moved significantly, consider if it's reverting or continuing
-        estimated = market_price
-        
-        if abs(momentum_pct) > 10:
-            # Large momentum → might be information-driven
-            # But also might be a whale manipulation
-            if efficiency > 0.6:
-                # Efficient market → momentum is probably real
-                estimated = market_price
-            else:
-                # Inefficient market → might mean-revert
-                reversion_factor = 0.3 * (1 - efficiency)
-                if momentum_pct > 0:
-                    estimated = market_price * (1 - reversion_factor * 0.5)
-                else:
-                    estimated = market_price * (1 + reversion_factor * 0.5)
-        
-        estimated = max(0.02, min(0.98, estimated))
-        divergence = estimated - market_price
-        
-        # Confidence untuk generic: base lebih tinggi, pasar efisien tetap bisa di-trade
-        # Bedanya: pasar sangat efisien punya divergence kecil, jadi won't pass divergence_ok anyway
-        confidence = 0.35 + (0.25 * min(1.0, vol_liq_ratio if liquidity>0 else 0))
-        
-        min_div = CATEGORY_THRESHOLDS['default']['min_divergence']
-        should_trade = abs(divergence) >= min_div and confidence >= 0.35
-        
-        result.update({
-            'estimated_prob': round(estimated, 4),
-            'divergence': round(divergence, 4),
-            'confidence': round(confidence, 4),
-            'should_trade': should_trade,
-            'recommended_side': 'YES' if divergence > 0 else 'NO' if should_trade else None,
-        })
-        
-        return result
+        crypto_id = find_crypto_id(question)
+        if not crypto_id:
+            return 0.0, ''
 
+        price_data = await fetch_crypto_data(session, crypto_id)
+        trend_data = await fetch_crypto_trend(session, crypto_id)
 
-# ══════════════════════════════════════════════════════════════════
-# SPREAD TOXICITY ANALYZER
-# ══════════════════════════════════════════════════════════════════
-class SpreadAnalyzer:
-    """
-    Analyzes whether the spread makes a trade viable.
-    
-    A "toxic" spread means that even if our prediction is correct,
-    we might still lose money because the buy/sell gap is too wide.
-    """
-    
-    @staticmethod
-    def analyze(
-        entry_price: float,
-        spread_pct: float,
-        estimated_divergence: float,
-        days_left: Optional[float],
-    ) -> Dict:
-        """
-        Returns viability analysis of the trade given the spread.
-        """
-        result = {
-            'is_viable': False,
-            'breakeven_move_pct': 0.0,
-            'expected_slippage_pct': 0.0,
-            'edge_after_costs': 0.0,
-            'toxicity_score': 0.0,  # 0 = safe, 100 = toxic
-        }
-        
-        if entry_price <= 0 or entry_price >= 1:
-            result['toxicity_score'] = 100
-            return result
-        
-        # Estimated slippage (half the spread, plus market impact)
-        half_spread = spread_pct / 2
-        market_impact = 0.5  # Base market impact in %
-        total_cost = half_spread + market_impact
-        
-        # Breakeven: how much does the price need to move for us to profit?
-        breakeven_pct = total_cost * 2  # Need to cover both entry and exit spread
-        
-        # Edge: divergence minus costs
-        edge = abs(estimated_divergence * 100) - breakeven_pct
-        
-        # Toxicity score
-        if spread_pct > 8:
-            toxicity = 90
-        elif spread_pct > 5:
-            toxicity = 70
-        elif spread_pct > 3:
-            toxicity = 40
-        elif spread_pct > 1.5:
-            toxicity = 20
+        if not price_data:
+            return 0.0, f'No data for {crypto_id}'
+
+        current_price = price_data['price']
+        change_24h = price_data['change_24h']
+        target = extract_price_target(question)
+        direction = extract_direction(question)
+
+        reasoning_parts = [f'{crypto_id}=${current_price:,.0f}', f'24h:{change_24h:+.1f}%']
+
+        bonus = 0.0
+
+        if target and target > 0:
+            dist_pct = (target - current_price) / current_price * 100
+            reasoning_parts.append(f'target=${target:,.0f}({dist_pct:+.1f}%)')
+
+            if direction in ('up', 'unknown'):
+                # "Will BTC go above $X?"
+                if current_price >= target:
+                    # Already above target → YES side likely wins
+                    if market_price < 0.75:
+                        bonus += 15  # Market hasn't priced this in yet!
+                        reasoning_parts.append('ABOVE-TARGET:underpriced')
+                elif abs(dist_pct) < 3 and change_24h > 0:
+                    # Very close to target and trending up
+                    if market_price < 0.55:
+                        bonus += 10
+                        reasoning_parts.append('NEAR-TARGET:bullish')
+                elif abs(dist_pct) < 5 and trend_data and trend_data['trend'] == 'up':
+                    bonus += 7
+                    reasoning_parts.append('CLOSE+UPTREND')
+
+            elif direction == 'down':
+                # "Will BTC dip below $X?"
+                if current_price <= target:
+                    if market_price < 0.75:
+                        bonus += 15
+                        reasoning_parts.append('BELOW-TARGET:underpriced')
+                elif abs(dist_pct) < 3 and change_24h < 0:
+                    if market_price < 0.55:
+                        bonus += 10
+                        reasoning_parts.append('NEAR-TARGET:bearish')
         else:
-            toxicity = 5
-        
-        # Time adjustment: shorter time = spread matters more
-        if days_left is not None and days_left < 0.25:  # < 6h
-            toxicity *= 1.3
-        
-        toxicity = min(100, toxicity)
-        
-        result.update({
-            'is_viable': edge > 0 and toxicity < 60,
-            'breakeven_move_pct': round(breakeven_pct, 2),
-            'expected_slippage_pct': round(total_cost, 2),
-            'edge_after_costs': round(edge, 2),
-            'toxicity_score': round(toxicity, 1),
-        })
-        
-        return result
+            # No specific target — use trend
+            if direction == 'up' and change_24h > 2 and market_price < 0.55:
+                bonus += 8
+                reasoning_parts.append('UP-TREND:underpriced')
+            elif direction == 'down' and change_24h < -2 and market_price < 0.55:
+                bonus += 8
+                reasoning_parts.append('DOWN-TREND:underpriced')
 
+        # Trend confirmation bonus
+        if trend_data:
+            reasoning_parts.append(f'6h:{trend_data["change_6h"]:+.1f}%')
+            if trend_data['accelerating']:
+                bonus += 3
+                reasoning_parts.append('ACCELERATING')
 
-# ══════════════════════════════════════════════════════════════════
-# VOLUME PROFILE ANALYZER
-# ══════════════════════════════════════════════════════════════════
-class VolumeAnalyzer:
-    """
-    Analyzes volume patterns to determine if price movement is genuine.
-    
-    Key insight: If volume is low and price moved a lot, it's likely
-    manipulation or noise. If volume is HIGH and price moved, it's
-    genuine information flow.
-    """
-    
+        return bonus, ' | '.join(reasoning_parts)
+
     @staticmethod
-    def analyze(
-        volume_24h: float,
-        liquidity: float,
-        momentum_pct: float,
-    ) -> Dict:
-        """Analyze if the momentum is backed by real volume."""
-        result = {
-            'volume_backed': False,
-            'vol_liq_ratio': 0.0,
-            'signal_quality': 'LOW',     # LOW, MEDIUM, HIGH
-            'manipulation_risk': 0.0,    # 0-100
-        }
-        
+    def score_whale_activity(volume_24h: float, liquidity: float,
+                             momentum_pct: float) -> Tuple[float, bool]:
+        """
+        Detect if whales are moving this market.
+        High volume + big momentum = whale activity.
+        """
         if liquidity <= 0:
-            result['manipulation_risk'] = 100
-            return result
-        
-        vol_liq_ratio = volume_24h / liquidity
-        
-        # If big momentum with low volume → likely manipulation
-        if abs(momentum_pct) > 5 and vol_liq_ratio < 0.5:
-            manip_risk = min(90, abs(momentum_pct) * 5)
-            quality = 'LOW'
-            volume_backed = False
-        elif abs(momentum_pct) > 5 and vol_liq_ratio >= 1.5:
-            manip_risk = max(5, 30 - vol_liq_ratio * 5)
-            quality = 'HIGH'
-            volume_backed = True
-        elif vol_liq_ratio >= 2.0:
-            manip_risk = 10
-            quality = 'HIGH'
-            volume_backed = True
-        elif vol_liq_ratio >= 0.8:
-            manip_risk = 25
-            quality = 'MEDIUM'
-            volume_backed = abs(momentum_pct) > 3
-        else:
-            manip_risk = 50
-            quality = 'LOW'
-            volume_backed = False
-        
-        result.update({
-            'volume_backed': volume_backed,
-            'vol_liq_ratio': round(vol_liq_ratio, 2),
-            'signal_quality': quality,
-            'manipulation_risk': round(manip_risk, 1),
-        })
-        
-        return result
+            return 0.0, False
+        ratio = volume_24h / liquidity
+        is_whale = ratio >= 3.0 and abs(momentum_pct) >= 10
+        if is_whale:
+            return 5.0, True
+        return 0.0, False
+
+    @staticmethod
+    def score_manipulation_risk(volume_24h: float, liquidity: float,
+                                momentum_pct: float) -> float:
+        """
+        PENALTY for suspected manipulation:
+        Big momentum + low volume = someone moving thin market.
+        """
+        if liquidity <= 0:
+            return -20.0
+        ratio = volume_24h / liquidity
+        if abs(momentum_pct) > 15 and ratio < 0.3:
+            return -15.0  # Very suspicious
+        elif abs(momentum_pct) > 10 and ratio < 0.5:
+            return -8.0
+        return 0.0
 
 
 # ══════════════════════════════════════════════════════════════════
 # ML FEATURE ENGINEERING
 # ══════════════════════════════════════════════════════════════════
-class FeatureEngineer:
-    """
-    Transforms raw market data into ML-ready features.
-    """
-    
-    @staticmethod
-    def extract(
-        entry_price: float,
-        liquidity: float,
-        volume_24h: float,
-        spread_pct: float,
-        momentum_pct: float,
-        days_left: Optional[float],
-        category: str,
-        is_arb: bool,
-        vol_analysis: Dict,
-        probability_analysis: Dict,
-    ) -> Dict[str, float]:
-        """Extract normalized features for ML model."""
-        
-        # Log-transform skewed values
-        liq_log = math.log10(max(liquidity, 1))
-        vol_log = math.log10(max(volume_24h, 1))
-        
-        # Distance from 50/50 (extreme prices are riskier)
-        dist_50 = abs(entry_price - 0.5) * 2  # 0 = at 50%, 1 = at extremes
-        
-        # Category encoding
-        cat_map = {'crypto': 1, 'sports': 2, 'politics': 3, 'default': 0}
-        cat_code = cat_map.get(category, 0)
-        
-        # Volume vs liquidity ratio
-        vlr = vol_analysis.get('vol_liq_ratio', 0)
-        
-        # External divergence
-        ext_div = abs(probability_analysis.get('divergence', 0))
-        
-        # Price volatility proxy
-        volatility = abs(momentum_pct) / max(1, math.sqrt(max(days_left or 1, 0.01) * 24))
-        
-        # Market efficiency
-        efficiency = min(1.0, liq_log / 6) * min(1.0, vol_log / 5)
-        
-        # Crowd agreement (how polarized is the market)
-        crowd = 1 - dist_50  # Near 50% = disagreement, near 0/100 = agreement
-        
-        features = {
-            'entry_price': entry_price,
-            'liquidity_log': round(liq_log, 4),
-            'volume_log': round(vol_log, 4),
-            'spread_pct': spread_pct,
-            'momentum_pct': momentum_pct,
-            'days_left': days_left if days_left is not None else 30.0,
-            'vol_liq_ratio': vlr,
-            'price_distance_from_50': round(dist_50, 4),
-            'category_code': cat_code,
-            'is_arb': 1.0 if is_arb else 0.0,
-            'volume_spike': 1.0 if vlr > 2.0 else 0.0,
-            'near_resolution': 1.0 if (days_left is not None and days_left < 1) else 0.0,
-            'price_volatility': round(volatility, 4),
-            'market_efficiency': round(efficiency, 4),
-            'crowd_agreement': round(crowd, 4),
-            'external_divergence': round(ext_div, 4),
-        }
-        
-        return features
+FEATURE_NAMES = [
+    'entry_price', 'liquidity_log', 'volume_log', 'spread_pct',
+    'momentum_abs', 'days_left', 'vol_liq_ratio',
+    'price_dist_50', 'category_code', 'is_arb', 'volume_spike',
+    'near_resolution', 'smart_score',
+]
+
+
+def extract_features(signal: dict, smart_score: float = 50.0) -> Dict[str, float]:
+    """Extract ML features from a signal."""
+    liq = signal.get('liquidity', 0)
+    vol = signal.get('volume_24h', 0)
+    entry = signal.get('entry_price', 0.5)
+    spread = signal.get('spread_pct', 0)
+    mom = signal.get('momentum_pct', 0)
+    days = signal.get('days')
+
+    cat_map = {'crypto': 1, 'sports': 2, 'politics': 3, 'general': 0}
+    category = detect_category(signal.get('question', ''))
+
+    return {
+        'entry_price': entry,
+        'liquidity_log': math.log10(max(liq, 1)),
+        'volume_log': math.log10(max(vol, 1)),
+        'spread_pct': spread,
+        'momentum_abs': abs(mom),
+        'days_left': days if days is not None else 30.0,
+        'vol_liq_ratio': vol / max(liq, 1),
+        'price_dist_50': abs(entry - 0.5),
+        'category_code': cat_map.get(category, 0),
+        'is_arb': 1.0 if signal.get('is_arb') else 0.0,
+        'volume_spike': 1.0 if (liq > 0 and vol / liq > 2.0) else 0.0,
+        'near_resolution': 1.0 if (days is not None and days < 1) else 0.0,
+        'smart_score': smart_score,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
-# ML MODEL MANAGER
+# ML MODEL
 # ══════════════════════════════════════════════════════════════════
-class ModelManager:
-    """
-    Manages the Random Forest + Gradient Boosting ensemble model.
-    Handles training, prediction, and persistence.
-    """
-    
+class MLModel:
+    """Gradient Boosting model that learns from trade outcomes."""
+
     def __init__(self, model_path: str):
         self.model_path = model_path
         self.model = None
         self.scaler = None
-        self.feature_names = FEATURE_NAMES
-        self.min_training_samples = 30
-        self.last_train_count = 0
+        self.trained_count = 0
+        self.min_samples = 20  # Need 20 closed trades to start learning
         self._load()
-    
+
     def _load(self):
-        """Load model from disk if exists."""
         if not HAS_SKLEARN:
-            log.warning("[ML] scikit-learn not installed, ML features disabled")
             return
-        
         if os.path.exists(self.model_path):
             try:
                 saved = load(self.model_path)
                 self.model = saved.get('model')
                 self.scaler = saved.get('scaler')
-                self.last_train_count = saved.get('train_count', 0)
-                log.info(f"[ML] Model loaded ({self.last_train_count} training samples)")
+                self.trained_count = saved.get('count', 0)
+                log.info(f"[ML] Model loaded ({self.trained_count} samples)")
             except Exception as e:
-                log.error(f"[ML] Failed to load model: {e}")
-    
+                log.warning(f"[ML] Load failed: {e}")
+
     def _save(self):
-        """Save model to disk."""
-        if self.model:
-            try:
-                dump({
-                    'model': self.model,
-                    'scaler': self.scaler,
-                    'train_count': self.last_train_count,
-                    'timestamp': datetime.now(timezone.utc).isoformat(),
-                }, self.model_path)
-                log.info(f"[ML] Model saved ({self.last_train_count} samples)")
-            except Exception as e:
-                log.error(f"[ML] Failed to save model: {e}")
-    
+        if not self.model:
+            return
+        try:
+            dump({
+                'model': self.model,
+                'scaler': self.scaler,
+                'count': self.trained_count,
+                'ts': datetime.now(timezone.utc).isoformat(),
+            }, self.model_path)
+        except Exception:
+            pass
+
+    @property
+    def is_trained(self) -> bool:
+        return self.model is not None and self.scaler is not None
+
     def train(self, db_path: str) -> bool:
-        """Train model on historical closed trades."""
+        """Train on historical closed trades."""
         if not HAS_SKLEARN or not HAS_PANDAS:
             return False
-        
         try:
             conn = sqlite3.connect(db_path)
             df = pd.read_sql_query(
@@ -936,248 +602,247 @@ class ModelManager:
                 conn
             )
             conn.close()
-            
-            if len(df) < self.min_training_samples:
-                log.info(f"[ML] Need more data: {len(df)}/{self.min_training_samples}")
+
+            if len(df) < self.min_samples:
+                log.info(f"[ML] Need data: {len(df)}/{self.min_samples}")
                 return False
-            
-            if len(df) == self.last_train_count:
-                log.debug("[ML] No new data since last training")
+            if len(df) == self.trained_count:
                 return False
-            
-            # Parse features
+
             rows = []
             for _, row in df.iterrows():
                 try:
-                    data = json.loads(row['features_json'])
+                    raw = json.loads(row['features_json'])
                     feat = {}
-                    for fn in self.feature_names:
-                        feat[fn] = float(data.get(fn, 0))
+                    for fn in FEATURE_NAMES:
+                        feat[fn] = float(raw.get(fn, 0))
                     feat['target'] = 1 if row['result'] == 'WIN' else 0
                     rows.append(feat)
                 except Exception:
                     continue
-            
-            if len(rows) < self.min_training_samples:
+
+            if len(rows) < self.min_samples:
                 return False
-            
+
             train_df = pd.DataFrame(rows)
-            X = train_df[self.feature_names].values
+            X = train_df[FEATURE_NAMES].values
             y = train_df['target'].values
-            
-            # Scale features
+
             self.scaler = StandardScaler()
             X_scaled = self.scaler.fit_transform(X)
-            
-            # Train ensemble
+
             self.model = GradientBoostingClassifier(
-                n_estimators=100,
-                max_depth=4,
-                learning_rate=0.1,
-                min_samples_split=5,
-                min_samples_leaf=3,
-                subsample=0.8,
-                random_state=42,
+                n_estimators=80, max_depth=3, learning_rate=0.1,
+                min_samples_split=5, min_samples_leaf=2,
+                subsample=0.8, random_state=42,
             )
             self.model.fit(X_scaled, y)
-            
-            # Cross-validation score
-            if len(rows) >= 20:
-                cv_scores = cross_val_score(self.model, X_scaled, y, cv=min(5, len(rows) // 5))
-                accuracy = cv_scores.mean()
-                log.info(f"[ML] Trained on {len(rows)} samples | CV Accuracy: {accuracy:.1%}")
+
+            if len(rows) >= 15:
+                cv = cross_val_score(self.model, X_scaled, y,
+                                     cv=min(5, len(rows) // 4))
+                log.info(f"[ML] Trained on {len(rows)} | Accuracy: {cv.mean():.1%}")
             else:
                 log.info(f"[ML] Trained on {len(rows)} samples")
-            
-            # Feature importance
-            importances = list(zip(self.feature_names, self.model.feature_importances_))
-            importances.sort(key=lambda x: x[1], reverse=True)
-            top_3 = ', '.join([f'{n}={v:.3f}' for n, v in importances[:3]])
-            log.info(f"[ML] Top features: {top_3}")
-            
-            self.last_train_count = len(rows)
+
+            self.trained_count = len(rows)
             self._save()
             return True
-            
         except Exception as e:
-            log.error(f"[ML] Training error: {e}")
+            log.error(f"[ML] Train error: {e}")
             return False
-    
-    def predict(self, features: Dict[str, float]) -> float:
-        """
-        Predict win probability for a given set of features.
-        Returns 0.0 to 1.0 (probability of winning this trade).
-        """
-        if not self.model or not self.scaler:
-            return 0.5  # Neutral if no model
-        
+
+    def predict_win_probability(self, features: Dict[str, float]) -> float:
+        """Predict probability of winning. Returns 0.0-1.0."""
+        if not self.is_trained:
+            return 0.5  # Neutral
         try:
-            X = [[features.get(fn, 0) for fn in self.feature_names]]
+            X = [[features.get(fn, 0) for fn in FEATURE_NAMES]]
             X_scaled = self.scaler.transform(X)
-            prob = self.model.predict_proba(X_scaled)[0]
-            # Return probability of WIN class
+            probs = self.model.predict_proba(X_scaled)[0]
             win_idx = list(self.model.classes_).index(1) if 1 in self.model.classes_ else 0
-            return float(prob[win_idx])
-        except Exception as e:
-            log.debug(f"[ML] Prediction error: {e}")
+            return float(probs[win_idx])
+        except Exception:
             return 0.5
 
 
 # ══════════════════════════════════════════════════════════════════
-# TRADING BRAIN (MAIN ORCHESTRATOR)
+# TRADING BRAIN — MAIN ORCHESTRATOR
 # ══════════════════════════════════════════════════════════════════
 class TradingBrain:
     """
-    The main intelligence orchestrator.
-    
-    Workflow for each signal:
-    1. Detect category (crypto/sports/politics)
-    2. If crypto → fetch real price data and estimate probability
-    3. Analyze volume profile (is momentum real?)
-    4. Analyze spread toxicity (can we profit after costs?)
-    5. Engineer ML features
-    6. Get ML prediction (if model trained)
-    7. Final verdict: TRADE or SKIP
+    The main intelligence engine, now using SCORING instead of GATES.
+
+    For every signal:
+    1. Calculate component scores (liquidity, spread, volume, etc.)
+    2. Check external data (crypto prices from CoinGecko)
+    3. Detect whale activity
+    4. Check for manipulation
+    5. If ML model exists, adjust score by ML prediction
+    6. Return final smart_score (0-100)
+
+    The scanner then picks the top-scoring signal that passes
+    a minimum threshold.
     """
-    
+
     def __init__(self, db_path: str, model_path: str):
         self.db_path = db_path
-        self.model_mgr = ModelManager(model_path)
-        self.prob_estimator = ProbabilityEstimator()
-        self.spread_analyzer = SpreadAnalyzer()
-        self.volume_analyzer = VolumeAnalyzer()
-        self.feature_engineer = FeatureEngineer()
+        self.ml = MLModel(model_path)
+        self.scorer = SmartScorer()
         self._scan_count = 0
-        log.info("[BRAIN] TradingBrain initialized")
-    
-    async def analyze_signal(self, session, signal_data: dict) -> Dict:
+        log.info(f"[BRAIN] v4.0 initialized | ML: {'trained' if self.ml.is_trained else 'learning'}")
+
+    async def analyze_signal(self, session, signal: dict) -> Dict:
         """
         Complete analysis of a trading signal.
-        Returns enriched signal data with brain verdict.
+        Returns dict with smart_score and should_trade.
         """
-        question = signal_data.get('question', '')
-        entry_price = signal_data.get('entry_price', 0.5)
-        liquidity = signal_data.get('liquidity', 0)
-        volume_24h = signal_data.get('volume_24h', 0)
-        spread_pct = signal_data.get('spread_pct', 0)
-        momentum_pct = signal_data.get('momentum_pct', 0)
-        days_left = signal_data.get('days')
-        is_arb = signal_data.get('is_arb', False)
-        entry_outcome = signal_data.get('entry_outcome', '')
-        
-        # 1. Detect category
+        question = signal.get('question', '')
+        entry_price = signal.get('entry_price', 0.5)
+        liquidity = signal.get('liquidity', 0)
+        volume_24h = signal.get('volume_24h', 0)
+        spread_pct = signal.get('spread_pct', 0)
+        momentum_pct = signal.get('momentum_pct', 0)
+        days_left = signal.get('days')
+        is_arb = signal.get('is_arb', False)
+        entry_outcome = signal.get('entry_outcome', '')
+
         category = detect_category(question)
-        thresholds = CATEGORY_THRESHOLDS.get(category, CATEGORY_THRESHOLDS['default'])
-        
-        # 2. Estimate real probability
+
+        # ── Component scores ─────────────────────────────
+        s_liq = self.scorer.score_liquidity(liquidity)
+        s_vol = self.scorer.score_volume(volume_24h, liquidity)
+        s_spread = self.scorer.score_spread(spread_pct)
+        s_mom = self.scorer.score_momentum(momentum_pct)
+        s_time = self.scorer.score_time_to_expiry(days_left)
+        s_price = self.scorer.score_entry_price(entry_price)
+        s_manip = self.scorer.score_manipulation_risk(volume_24h, liquidity, momentum_pct)
+        s_whale, is_whale = self.scorer.score_whale_activity(volume_24h, liquidity, momentum_pct)
+
+        # ── External data (crypto only) ──────────────────
+        s_crypto = 0.0
+        crypto_reasoning = ''
         if category == 'crypto':
-            prob_analysis = await self.prob_estimator.estimate_crypto_probability(
+            s_crypto, crypto_reasoning = await self.scorer.score_crypto_divergence(
                 session, question, entry_price, entry_outcome
             )
+
+        # ── Arbitrage bonus ──────────────────────────────
+        s_arb = 0.0
+        if is_arb and signal.get('arb_profit', 0) > 0.2:
+            s_arb = 20.0
+
+        # ── Raw score ────────────────────────────────────
+        raw_score = (
+            s_liq + s_vol + s_spread + s_mom + s_time +
+            s_price + s_manip + s_whale + s_crypto + s_arb
+        )
+
+        # ── ML adjustment ────────────────────────────────
+        features = extract_features(signal, raw_score)
+        ml_prob = self.ml.predict_win_probability(features)
+
+        if self.ml.is_trained:
+            # Blend raw score with ML prediction
+            ml_bonus = (ml_prob - 0.5) * 30  # -15 to +15
+            final_score = raw_score + ml_bonus
         else:
-            prob_analysis = await self.prob_estimator.estimate_generic_probability(
-                question, entry_price, liquidity, volume_24h,
-                days_left, momentum_pct
-            )
-        
-        # 3. Volume analysis
-        vol_analysis = self.volume_analyzer.analyze(
-            volume_24h, liquidity, momentum_pct
-        )
-        
-        # 4. Spread toxicity
-        spread_analysis = self.spread_analyzer.analyze(
-            entry_price, spread_pct,
-            prob_analysis.get('divergence', 0),
-            days_left
-        )
-        
-        # 5. Feature engineering
-        features = self.feature_engineer.extract(
-            entry_price, liquidity, volume_24h, spread_pct,
-            momentum_pct, days_left, category, is_arb,
-            vol_analysis, prob_analysis
-        )
-        
-        # 6. ML prediction
-        ml_score = self.model_mgr.predict(features)
-        
-        # 7. GATE CHECKS
-        has_model = self.model_mgr.model is not None
-        gate_results = {
-            'liquidity_ok': liquidity >= thresholds['min_liquidity'],
-            'volume_ok': volume_24h >= thresholds['min_volume'],
-            'spread_ok': spread_pct <= thresholds['max_spread_pct'],
-            'divergence_ok': abs(prob_analysis.get('divergence', 0)) >= thresholds['min_divergence'],
-            'confidence_ok': prob_analysis.get('confidence', 0) >= thresholds['min_confidence'],
-            'volume_backed': vol_analysis.get('volume_backed', False),
-            'spread_viable': spread_analysis.get('is_viable', False),
-            # ml_positive: hanya aktif jika model sudah terlatih
-            'ml_positive': (ml_score >= 0.55) if has_model else True,
-            'not_manipulated': vol_analysis.get('manipulation_risk', 100) < 70,
+            final_score = raw_score
+
+        final_score = round(max(0, min(100, final_score)), 1)
+
+        # ── Build detail dict ────────────────────────────
+        details = {
+            's_liquidity': s_liq, 's_volume': s_vol,
+            's_spread': s_spread, 's_momentum': s_mom,
+            's_time': s_time, 's_price': s_price,
+            's_manipulation': s_manip, 's_whale': s_whale,
+            's_crypto': s_crypto, 's_arb': s_arb,
         }
-        
-        gates_passed = sum(1 for v in gate_results.values() if v)
-        total_gates = len(gate_results)
-        
-        # Final verdict: perlu 6/9 gates (lebih realistis saat belum ada model)
-        min_gates = 6 if not has_model else 7
-        should_trade = gates_passed >= min_gates and gate_results['spread_ok'] and gate_results['not_manipulated']
-        
-        # For ARBITRAGE: bypass divergence/confidence gates
-        if is_arb and signal_data.get('arb_profit', 0) > 0.3:
-            should_trade = gate_results['liquidity_ok'] and gate_results['spread_ok']
-        
-        # Calculate final confidence score (0-100)
-        has_model = self.model_mgr.model is not None
-        if has_model:
-            ml_weight = ml_score * 35
-        else:
-            # Belum ada model: ML tidak terlalu berpengaruh, fokus ke market quality
-            ml_weight = 0.5 * 15  # netral 15 poin
-        brain_score = (
-            ml_weight +
-            prob_analysis.get('confidence', 0) * 25 +
-            (1 - vol_analysis.get('manipulation_risk', 50) / 100) * 20 +
-            (1 - spread_analysis.get('toxicity_score', 50) / 100) * 15 +
-            (gates_passed / total_gates) * 25  # lebih tinggi bobot gate saat tidak ada model
-        )
-        brain_score = round(max(0, min(100, brain_score)), 1)
-        
+
+        # ── Hard blocks (these make the trade unacceptable) ──
+        hard_blocked = False
+        block_reason = ''
+        if spread_pct > 10.0:
+            hard_blocked = True
+            block_reason = 'TOXIC_SPREAD'
+        if liquidity < 500:
+            hard_blocked = True
+            block_reason = 'NO_LIQUIDITY'
+        if days_left is not None and days_left < 0.03:  # < 45 min
+            hard_blocked = True
+            block_reason = 'TOO_CLOSE_TO_EXPIRY'
+
+        should_trade = final_score >= 50 and not hard_blocked
+
         return {
-            'brain_score': brain_score,
+            'smart_score': final_score,
             'should_trade': should_trade,
+            'hard_blocked': hard_blocked,
+            'block_reason': block_reason,
             'category': category,
-            'prob_analysis': prob_analysis,
-            'vol_analysis': vol_analysis,
-            'spread_analysis': spread_analysis,
-            'ml_score': round(ml_score * 100, 1),
+            'is_whale': is_whale,
+            'ml_prob': round(ml_prob * 100, 1),
+            'crypto_info': crypto_reasoning,
             'features': features,
-            'gate_results': gate_results,
-            'gates_passed': f'{gates_passed}/{total_gates}',
-            'reasoning': prob_analysis.get('reasoning', ''),
+            'details': details,
         }
-    
-    def train(self):
-        """Trigger model retraining."""
-        self.model_mgr.train(self.db_path)
-    
-    def predict_confidence(self, signal_data: dict) -> float:
+
+    def predict_confidence(self, signal: dict) -> float:
         """
-        Quick synchronous prediction (fallback without external data).
-        Used when full async analysis is not available.
+        Quick synchronous scoring (no external data).
+        Used for display purposes in the scanner table.
         """
-        features = self.feature_engineer.extract(
-            signal_data.get('entry_price', 0.5),
-            signal_data.get('liquidity', 0),
-            signal_data.get('volume_24h', 0),
-            signal_data.get('spread_pct', 0),
-            signal_data.get('momentum_pct', 0),
-            signal_data.get('days'),
-            detect_category(signal_data.get('question', '')),
-            signal_data.get('is_arb', False),
-            {'vol_liq_ratio': 0},
-            {'divergence': 0},
+        liq = signal.get('liquidity', 0)
+        vol = signal.get('volume_24h', 0)
+        spread = signal.get('spread_pct', 99)
+        mom = signal.get('momentum_pct', 0)
+        days = signal.get('days')
+        entry = signal.get('entry_price', 0.5)
+        is_arb = signal.get('is_arb', False)
+
+        score = (
+            self.scorer.score_liquidity(liq) +
+            self.scorer.score_volume(vol, liq) +
+            self.scorer.score_spread(spread) +
+            self.scorer.score_momentum(mom) +
+            self.scorer.score_time_to_expiry(days) +
+            self.scorer.score_entry_price(entry) +
+            self.scorer.score_manipulation_risk(vol, liq, mom)
         )
-        ml_prob = self.model_mgr.predict(features)
-        return round(ml_prob * 100, 1)
+        if is_arb and signal.get('arb_profit', 0) > 0.2:
+            score += 20
+
+        # ML adjustment if available
+        if self.ml.is_trained:
+            features = extract_features(signal, score)
+            ml_prob = self.ml.predict_win_probability(features)
+            ml_bonus = (ml_prob - 0.5) * 30
+            score += ml_bonus
+
+        return round(max(0, min(100, score)), 1)
+
+    def train(self):
+        """Trigger ML model retraining."""
+        self.ml.train(self.db_path)
+
+    def get_dynamic_bet_size(self, bankroll: float, base_bet: float,
+                             smart_score: float) -> float:
+        """
+        Kelly-inspired dynamic bet sizing.
+        Higher score = larger bet (up to 2x base).
+        Lower score = smaller bet (down to 0.5x base).
+        """
+        if smart_score >= 75:
+            multiplier = 1.5
+        elif smart_score >= 65:
+            multiplier = 1.2
+        elif smart_score >= 55:
+            multiplier = 1.0
+        else:
+            multiplier = 0.7
+
+        # Never bet more than 15% of bankroll
+        max_bet = bankroll * 0.15
+        bet = min(base_bet * multiplier, max_bet)
+        return round(max(0.10, bet), 2)
