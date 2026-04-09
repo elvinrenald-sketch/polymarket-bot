@@ -113,12 +113,12 @@ CFG = {
     'TIME_EXIT_MINUTES'   : 45,      # Close jika sisa < 45 menit
     'FORCE_EXIT_MINUTES'  : 3,       # FORCE close jika sisa < 3 menit
     'MAX_HOLD_HOURS'      : 72,      # Force close setelah 72 jam
-    'MIN_ML_CONFIDENCE'   : 50.0,    # Minimal skor dari Brain (0-100)
+    'MIN_ML_CONFIDENCE'   : 70.0,    # Minimal skor dari Brain (0-100)
 
     # Signal — hanya STRONG BUY & ARBITRAGE yang auto-open
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
-    'MIN_MOMENTUM'        : 10.0,
-    'MIN_LIQUIDITY'       : 500,
+    'MIN_MOMENTUM'        : 15.0,
+    'MIN_LIQUIDITY'       : 2000,
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.25,
@@ -567,9 +567,9 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
     score = (
         (100 if is_arb else 0) +
         min(60, abs(mom_pct) * 4) +
-        min(25, max_spread * 2.5) +
-        min(15, math.log10(max(liq, 1)) * 4) +
-        min(15, math.log10(max(vol, 1)) * 4) +
+        max(-50, 25 - (max_spread * 5)) + # PENALTY for High Spread
+        min(20, math.log10(max(liq, 1)) * 4) +
+        min(20, math.log10(max(vol, 1)) * 4) +
         near_bonus + vol_bonus
     )
 
@@ -580,12 +580,12 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'ARBITRAGE'; action = 'BELI ALL'; color = GG
         is_strong = True; is_auto = True
         
-    elif abs(mom_pct) >= 15 and near_res and vol_spike:
+    elif abs(mom_pct) >= 15 and near_res and vol_spike and max_spread <= 5.0:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 10 and near_res:
+    elif abs(mom_pct) >= 20 and vol_spike and max_spread <= 6.0:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
@@ -940,6 +940,7 @@ async def main():
                     if r.get('is_auto')
                     and r['id'] not in already_opened
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
+                    and r.get('spread_pct', 100) <= 6.0
                     and r.get('brain_score', 100) >= CFG['MIN_ML_CONFIDENCE']
                     and (r['days'] is None or r['days'] >= (CFG['TIME_EXIT_MINUTES'] * 2) / 1440)
                 ]
