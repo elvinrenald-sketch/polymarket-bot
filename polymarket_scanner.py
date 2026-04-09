@@ -42,8 +42,11 @@ from pathlib import Path
 
 try:
     from intelligence import TradingBrain
-except ImportError:
+except Exception as e:
+    import traceback
+    traceback.print_exc()
     TradingBrain = None
+    print(f"FAILED TO IMPORT TradingBrain: {e}")
 
 # Colorama import aman — strip warna di Railway (no TTY)
 try:
