@@ -104,7 +104,7 @@ CFG = {
     # Risk Management — Dynamic Sizing
     'BANKROLL'            : 10.00,     # Starting equity
     'BET_PCT'             : 0.10,      # 10% of equity per trade ($10→$1, $20→$2)
-    'MIN_BET'             : 0.50,      # Minimum bet $0.50
+    'MIN_BET'             : 1.00,      # Minimum $1 (Polymarket requirement)
     'MAX_BET'             : 5.00,      # Maximum bet $5.00
     'MAX_POSITIONS'       : 5,         # Max 5 concurrent positions
     'MAX_EXPOSURE_PCT'    : 0.50,      # Max 50% of equity exposed
@@ -911,7 +911,7 @@ async def main():
 
     banner()
     log.info('=== POLYMARKET AUTO BOT v12.0 (INTELLIGENCE) START ===')
-    log.info(f'TIME_EXIT={CFG["TIME_EXIT_MINUTES"]}m | FORCE_EXIT={CFG["FORCE_EXIT_MINUTES"]}m | MAX_EXP=${CFG["MAX_EXPOSURE"]} | MAX_POS={CFG["MAX_POSITIONS"]}')
+    log.info(f'TIME_EXIT={CFG["TIME_EXIT_MINUTES"]}m | FORCE_EXIT={CFG["FORCE_EXIT_MINUTES"]}m | MAX_EXP_PCT={CFG["MAX_EXPOSURE_PCT"]} | MAX_POS={CFG["MAX_POSITIONS"]}')
 
     history       : Dict[str, list] = {}
     scans         = 0
