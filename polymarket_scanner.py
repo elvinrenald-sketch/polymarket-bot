@@ -113,7 +113,7 @@ CFG = {
     'TIME_EXIT_MINUTES'   : 45,      # Close jika sisa < 45 menit
     'FORCE_EXIT_MINUTES'  : 3,       # FORCE close jika sisa < 3 menit
     'MAX_HOLD_HOURS'      : 48,      # Force close setelah 72 jam
-    'MIN_ML_CONFIDENCE'   : 55.0,    # Minimal skor dari Brain (0-100)
+    'MIN_BRAIN_SCORE'     : 50.0,    # Minimum smart_score dari Brain (0-100)
 
     # Signal — hanya STRONG BUY & ARBITRAGE yang auto-open
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'BUY', 'ARBITRAGE', 'EDGE'],  # Brain decides
