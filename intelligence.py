@@ -1049,27 +1049,34 @@ class TradingBrain:
         brain_score = round(max(0, min(100, brain_score)), 1)
 
         # ─── Step 7: Gate checks (simple — 5 gates, need 3) ──
-        gates = {
-            'liquidity_ok':  liquidity >= 1000,
+        # HARD GATES: these MUST pass (no bypass)
+        hard_gates = {
             'spread_ok':     spread_pct <= 8.0,
+            'not_extreme':   0.05 < entry_price < 0.95,  # NEVER buy at 0.97+ (zero profit!)
+        }
+        # SOFT GATES: need 2/3 to pass
+        soft_gates = {
+            'liquidity_ok':  liquidity >= 1000,
             'not_toxic':     spread.get('is_viable', True),
             'volume_ok':     volume_24h >= 300,
-            'not_extreme':   0.03 < entry_price < 0.97,
         }
 
-        passed = sum(1 for v in gates.values() if v)
-        total = len(gates)
+        all_gates = {**hard_gates, **soft_gates}
+        passed = sum(1 for v in all_gates.values() if v)
+        total = len(all_gates)
+        hard_pass = all(hard_gates.values())
+        soft_pass = sum(1 for v in soft_gates.values() if v) >= 2
 
-        # Need at least 3/5 gates + spread must be OK
+        # ALL hard gates must pass + at least 2/3 soft gates + brain_score >= 40
         should_trade = (
-            passed >= 3
-            and gates['spread_ok']
+            hard_pass
+            and soft_pass
             and brain_score >= 40
         )
 
         # Arbitrage bypass (pure math opportunity)
         if is_arb and signal_data.get('arb_profit', 0) > 0.3:
-            should_trade = gates['liquidity_ok'] and gates['not_extreme']
+            should_trade = all_gates['liquidity_ok'] and all_gates['not_extreme']
             brain_score = max(brain_score, 65)
 
         return {
@@ -1082,7 +1089,7 @@ class TradingBrain:
             'whale': whale,
             'spread_analysis': spread,
             'features': features,
-            'gates': gates,
+            'gates': all_gates,
             'gates_passed': f'{passed}/{total}',
             'reasoning': prob.get('reasoning', ''),
         }

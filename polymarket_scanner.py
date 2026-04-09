@@ -130,14 +130,31 @@ CFG = {
 }
 
 # ══════════════════════════════════════════════════════════════════
-# PATHS
+# PATHS — Smart Volume Detection
 # ══════════════════════════════════════════════════════════════════
-JOURNAL_DIR = os.path.expanduser('~/polymarket-scanner/journal')
-Path(JOURNAL_DIR).mkdir(parents=True, exist_ok=True)
-DB_PATH    = os.path.join(JOURNAL_DIR, 'trades.db')
-MODEL_PATH = os.path.join(JOURNAL_DIR, 'brain.joblib')
-CSV_PATH = os.path.join(JOURNAL_DIR, 'trades.csv')
-LOG_PATH = os.path.join(JOURNAL_DIR, 'scanner.log')
+# Priority: 1) JOURNAL_DIR env var  2) /data/journal (Railway Volume)  3) Local fallback
+def _resolve_journal_dir() -> str:
+    """Detect the best journal directory with Railway Volume support."""
+    # 1. Explicit env var override
+    env_dir = os.environ.get('JOURNAL_DIR')
+    if env_dir:
+        Path(env_dir).mkdir(parents=True, exist_ok=True)
+        return env_dir
+    # 2. Railway Volume mount at /data/journal
+    railway_vol = '/data/journal'
+    if os.path.isdir('/data'):
+        Path(railway_vol).mkdir(parents=True, exist_ok=True)
+        return railway_vol
+    # 3. Local development fallback
+    local = os.path.expanduser('~/polymarket-scanner/journal')
+    Path(local).mkdir(parents=True, exist_ok=True)
+    return local
+
+JOURNAL_DIR = _resolve_journal_dir()
+DB_PATH     = os.path.join(JOURNAL_DIR, 'trades.db')
+MODEL_PATH  = os.path.join(JOURNAL_DIR, 'brain.joblib')
+CSV_PATH    = os.path.join(JOURNAL_DIR, 'trades.csv')
+LOG_PATH    = os.path.join(JOURNAL_DIR, 'scanner.log')
 
 logging.basicConfig(
     level=logging.INFO,
@@ -907,14 +924,41 @@ def display(results, stats_scan, stats_j, pm, closed_this_scan):
 async def main():
     init_db()
     
+    # ── Startup diagnostics ──────────────────────────────────
+    is_volume = JOURNAL_DIR.startswith('/data')
+    storage_type = '🔒 PERSISTENT (Railway Volume)' if is_volume else '⚠️ EPHEMERAL (local/no volume)'
+    
+    # Check existing data
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED'")
+        closed_count = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED'")
+        total_pnl = cur.fetchone()[0]
+        conn.close()
+    except Exception:
+        closed_count = 0
+        total_pnl = 0
+
     # Initialize Brain
     brain = None
     if TradingBrain:
         brain = TradingBrain(DB_PATH, MODEL_PATH)
 
     banner()
-    log.info('=== POLYMARKET AUTO BOT v12.0 (INTELLIGENCE) START ===')
-    log.info(f'TIME_EXIT={CFG["TIME_EXIT_MINUTES"]}m | FORCE_EXIT={CFG["FORCE_EXIT_MINUTES"]}m | MAX_EXP_PCT={CFG["MAX_EXPOSURE_PCT"]} | MAX_POS={CFG["MAX_POSITIONS"]}')
+    log.info('=' * 60)
+    log.info('  POLYMARKET AUTO BOT v13.0 (PERSISTENT MEMORY)')
+    log.info('=' * 60)
+    log.info(f'  Storage : {storage_type}')
+    log.info(f'  Journal : {JOURNAL_DIR}')
+    log.info(f'  Database: {DB_PATH}')
+    log.info(f'  History : {closed_count} closed trades | P&L: ${total_pnl:+.2f}')
+    log.info(f'  Brain   : {"LOADED (ML active)" if brain and brain.model_mgr.is_trained else "HEURISTIC (learning)"}')
+    log.info(f'  ML needs: {max(0, 20 - closed_count)} more trades to activate')
+    log.info(f'  Config  : TP={CFG["TAKE_PROFIT_PCT"]}% SL={CFG["STOP_LOSS_PCT"]}% BetPct={CFG["BET_PCT"]*100:.0f}%')
+    log.info(f'  Entry   : Price range 0.05-0.95 | Spread ≤8% | Liq ≥$1K')
+    log.info('=' * 60)
 
     history       : Dict[str, list] = {}
     scans         = 0
