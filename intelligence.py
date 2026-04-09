@@ -303,19 +303,27 @@ class SmartScorer:
         if liquidity <= 0:
             return 0.0
         ratio = volume_24h / liquidity
-        # Whale detection: very high vol/liq means big players are moving
+        # Base score from absolute volume
+        abs_score = 0.0
+        if volume_24h >= 10000:
+            abs_score = 5.0
+        elif volume_24h >= 3000:
+            abs_score = 3.0
+        elif volume_24h >= 1000:
+            abs_score = 2.0
+        # Ratio score (whale detection)
         if ratio >= 5.0:
-            return 15.0  # Whale alert!
+            return 15.0 + abs_score
         elif ratio >= 2.0:
-            return 12.0
+            return 12.0 + abs_score
         elif ratio >= 1.0:
-            return 10.0
+            return 10.0 + abs_score
         elif ratio >= 0.5:
-            return 7.0
+            return 8.0 + abs_score
         elif ratio >= 0.2:
-            return 4.0
+            return 6.0 + abs_score
         else:
-            return 1.0
+            return 3.0 + abs_score
 
     @staticmethod
     def score_spread(spread_pct: float) -> float:
@@ -493,15 +501,17 @@ class SmartScorer:
                                 momentum_pct: float) -> float:
         """
         PENALTY for suspected manipulation:
-        Big momentum + low volume = someone moving thin market.
+        Big momentum + VERY low volume = someone moving thin market.
+        Only penalize extreme cases.
         """
         if liquidity <= 0:
-            return -20.0
+            return -15.0
         ratio = volume_24h / liquidity
-        if abs(momentum_pct) > 15 and ratio < 0.3:
-            return -15.0  # Very suspicious
-        elif abs(momentum_pct) > 10 and ratio < 0.5:
-            return -8.0
+        # Only penalize if momentum is very high AND volume is very low
+        if abs(momentum_pct) > 20 and ratio < 0.15:
+            return -10.0  # Very suspicious
+        elif abs(momentum_pct) > 15 and ratio < 0.1:
+            return -5.0
         return 0.0
 
 
