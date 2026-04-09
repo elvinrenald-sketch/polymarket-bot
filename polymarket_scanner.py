@@ -108,12 +108,12 @@ CFG = {
     'MAX_EXPOSURE'        : 5.00,    # STOP buka posisi baru jika exposure >= $5
 
     # Auto-Close rules
-    'TAKE_PROFIT_PCT'     : 40.0,    # Close jika naik 50%
-    'STOP_LOSS_PCT'       : 25.0,    # KETAT    # Close jika turun 40%
+    'TAKE_PROFIT_PCT'     : 45.0,    # Close @ 45% profit
+    'STOP_LOSS_PCT'       : 30.0,    # Stop loss 30%
     'TIME_EXIT_MINUTES'   : 45,      # Close jika sisa < 45 menit
     'FORCE_EXIT_MINUTES'  : 3,       # FORCE close jika sisa < 3 menit
     'MAX_HOLD_HOURS'      : 48,      # Force close setelah 72 jam
-    'MIN_BRAIN_SCORE'     : 50.0,    # Minimum smart_score dari Brain (0-100)
+    'MIN_ML_CONFIDENCE'   : 55.0,    # Minimal skor dari Brain (0-100)
 
     # Signal — hanya STRONG BUY & ARBITRAGE yang auto-open
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'BUY', 'ARBITRAGE', 'EDGE'],  # Brain decides
@@ -227,23 +227,7 @@ def init_db():
 
 def db_open_position(r: dict, amount: float, shares: float) -> int:
     ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    # Use brain's ML features if available, otherwise save basic info
-    if 'features_json' in r:
-        features = r['features_json']
-    else:
-        try:
-            features = json.dumps({
-                'entry_price': r.get('entry_price', 0),
-                'liquidity': r.get('liquidity', 0),
-                'volume_24h': r.get('volume_24h', 0),
-                'spread_pct': r.get('spread_pct', 0),
-                'momentum_pct': r.get('momentum_pct', 0),
-                'score': r.get('score', 0),
-                'brain_score': r.get('brain_score', 0),
-            })
-        except Exception:
-            features = '{}'
-
+    features = json.dumps(r) # Save the whole result as features
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
     cur.execute('''INSERT INTO positions
@@ -597,12 +581,17 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'ARBITRAGE'; action = 'BELI ALL'; color = GG
         is_strong = True; is_auto = True
         
-    elif abs(mom_pct) >= 15 and near_res and vol_spike and max_spread <= 5.0:
+    elif abs(mom_pct) >= 12 and near_res and vol_spike:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 20 and vol_spike and max_spread <= 6.0:
+    elif abs(mom_pct) >= 10 and near_res:
+        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
+        signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
+        entry_name = d; is_strong = True; is_auto = True
+
+    elif abs(mom_pct) >= 15 and vol_spike:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
@@ -952,48 +941,41 @@ async def main():
                 scans += 1
                 ms     = int((time.time() - t0) * 1000)
 
-                # ── PRE-FILTER: basic sanity ─────────────────
+                # ── PRE-FILTER: basic sanity checks ─────────────
                 pre_candidates = [
                     r for r in results
                     if r.get('is_auto')
                     and r['id'] not in already_opened
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
-                    and r.get('spread_pct', 100) <= CFG.get('MAX_SPREAD_PCT', 8.0)
-                    and (r['days'] is None or r['days'] >= 0.05)
+                    and r.get('spread_pct', 100) <= 8.0
+                    and (r['days'] is None or r['days'] >= 0.02)
                 ]
 
-                # ── DEEP ANALYSIS with Brain ────────────────
+                # ── DEEP ANALYSIS: verify with external data ────
                 auto_candidates = []
-                for candidate in pre_candidates[:8]:
-                    try:
-                        if brain:
+                if brain and pre_candidates:
+                    for candidate in pre_candidates[:5]:
+                        try:
                             analysis = await brain.analyze_signal(session, candidate)
-                            smart = analysis.get('smart_score', 0)
-                            candidate['brain_score'] = smart
-                            candidate['should_trade'] = analysis.get('should_trade', False)
                             candidate['brain_analysis'] = analysis
+                            candidate['brain_score'] = analysis.get('brain_score', 0)
+                            candidate['should_trade'] = analysis.get('should_trade', False)
+                            candidate['gates'] = analysis.get('gates_passed', '0/0')
 
-                            if analysis.get('should_trade') and smart >= CFG.get('MIN_BRAIN_SCORE', 50):
+                            if analysis.get('should_trade') and analysis.get('brain_score', 0) >= CFG.get('MIN_ML_CONFIDENCE', 40):
                                 auto_candidates.append(candidate)
-                                crypto_info = analysis.get('crypto_info', '')
                                 log.info(f"[BRAIN] APPROVED: {candidate['question'][:50]} | "
-                                         f"Score:{smart:.0f} | {crypto_info[:60]}")
+                                         f"Score:{analysis['brain_score']:.0f} | "
+                                         f"Gates:{analysis['gates_passed']}")
                             else:
-                                reason = analysis.get('block_reason', '')
-                                log.info(f"[BRAIN] SKIP: {candidate['question'][:50]} | "
-                                         f"Score:{smart:.0f} | {reason}")
-                        else:
-                            # No brain — use basic filtering
-                            if candidate.get('score', 0) >= 100:
-                                auto_candidates.append(candidate)
-                    except Exception as e:
-                        log.debug(f'[BRAIN] Error: {e}')
+                                log.info(f"[BRAIN] REJECTED: {candidate['question'][:50]} | "
+                                         f"Score:{analysis['brain_score']:.0f} | "
+                                         f"Gates:{analysis['gates_passed']}")
+                        except Exception as e:
+                            log.debug(f'[BRAIN] Analysis error: {e}')
 
-                # Sort by smart_score descending
-                auto_candidates.sort(key=lambda x: x.get('brain_score', 0), reverse=True)
-
-                # Train Brain every 20 scans
-                if brain and scans % 20 == 0:
+                # Train Brain every 15 scans
+                if brain and scans % 15 == 0:
                     try:
                         await asyncio.to_thread(brain.train)
                     except Exception:
@@ -1003,14 +985,9 @@ async def main():
                     can, _ = pm.can_open()
                     if can:
                         best = auto_candidates[0]
-                        # Save features for ML learning
-                        if brain and 'brain_analysis' in best:
-                            best['features_json'] = json.dumps(
-                                best['brain_analysis'].get('features', {}))
                         pos_id = await pm.open_position(session, best)
                         if pos_id:
                             already_opened.add(best['id'])
-
 
                 try:
                     c2 = sqlite3.connect(DB_PATH)
