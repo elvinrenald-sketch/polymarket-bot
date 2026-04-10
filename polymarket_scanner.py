@@ -997,7 +997,7 @@ class PositionManager:
 def banner():
     mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
     print('=' * 70)
-    print('  POLYMARKET AUTO BOT v12.0 (INTELLIGENCE)')
+    print('  POLYMARKET AUTO BOT v14.1 (CLEAN BRAIN)')
     print(f'  Mode: {mode} | TPM: {CFG["TIME_EXIT_MINUTES"]}m | FEM: {CFG["FORCE_EXIT_MINUTES"]}m')
     print('=' * 70)
 
@@ -1071,6 +1071,25 @@ def display(results, stats_scan, stats_j, pm, closed_this_scan):
 # MAIN LOOP
 # ══════════════════════════════════════════════════════════════════
 async def main():
+    # ── ONE-TIME RESET (set RESET_DATA=true in Railway env vars) ──
+    if os.environ.get('RESET_DATA', '').lower() == 'true':
+        log.info('🧹 RESET_DATA=true detected — wiping database & ML brain...')
+        # Delete database
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+            log.info(f'  ✓ Deleted: {DB_PATH}')
+        # Delete ML model
+        if os.path.exists(MODEL_PATH):
+            os.remove(MODEL_PATH)
+            log.info(f'  ✓ Deleted: {MODEL_PATH}')
+        # Delete CSV export
+        if os.path.exists(CSV_PATH):
+            os.remove(CSV_PATH)
+            log.info(f'  ✓ Deleted: {CSV_PATH}')
+        log.info('🧹 RESET COMPLETE — Bot starts with a clean brain!')
+        log.info('⚠️  IMPORTANT: Remove RESET_DATA env var from Railway NOW')
+        log.info('    to prevent accidental reset on next deploy!')
+
     init_db()
     
     # ── Startup diagnostics ──────────────────────────────────
@@ -1097,7 +1116,7 @@ async def main():
 
     banner()
     log.info('=' * 60)
-    log.info('  POLYMARKET AUTO BOT v13.0 (PERSISTENT MEMORY)')
+    log.info('  POLYMARKET AUTO BOT v14.1 (CLEAN BRAIN)')
     log.info('=' * 60)
     log.info(f'  Storage : {storage_type}')
     log.info(f'  Journal : {JOURNAL_DIR}')
@@ -1105,8 +1124,9 @@ async def main():
     log.info(f'  History : {closed_count} closed trades | P&L: ${total_pnl:+.2f}')
     log.info(f'  Brain   : {"LOADED (ML active)" if brain and brain.model_mgr.is_trained else "HEURISTIC (learning)"}')
     log.info(f'  ML needs: {max(0, 20 - closed_count)} more trades to activate')
-    log.info(f'  Config  : TP={CFG["TAKE_PROFIT_PCT"]}% SL={CFG["STOP_LOSS_PCT"]}% BetPct={CFG["BET_PCT"]*100:.0f}%')
+    log.info(f'  Config  : TP={CFG["TAKE_PROFIT_PCT"]}% SL={CFG["STOP_LOSS_PCT"]}% | Tiered Sizing')
     log.info(f'  Entry   : Price range 0.05-0.95 | Spread ≤8% | Liq ≥$1K')
+    log.info(f'  Safety  : Circuit Breaker (3 loss → 1h pause) | Blacklist active')
     log.info('=' * 60)
 
     history       : Dict[str, list] = {}
