@@ -105,7 +105,7 @@ CFG = {
     'CLEAR_SCREEN'        : False,   # Railway tidak punya terminal
 
     # Risk Management — Dynamic Sizing
-    'BANKROLL'            : 10.00,     # Starting equity
+    'BANKROLL'            : 20.00,     # Starting equity
     'BET_PCT'             : 0.10,      # 10% of equity per trade ($10→$1, $20→$2)
     'MIN_BET'             : 1.00,      # Minimum $1 (Polymarket requirement)
     'MAX_BET'             : 5.00,      # Maximum bet $5.00
