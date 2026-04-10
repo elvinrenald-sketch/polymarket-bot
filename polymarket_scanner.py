@@ -130,6 +130,31 @@ CFG = {
 }
 
 # ══════════════════════════════════════════════════════════════════
+# BLACKLIST — Short-term gambling markets (sub-daily resolution)
+# ══════════════════════════════════════════════════════════════════
+import re as _re
+
+# These patterns detect intra-day "Up or Down" markets like:
+#   "Bitcoin Up or Down - April 9, 1:30AM-1:45AM ET"
+#   "Ethereum Up or Down - April 9, 7PM-8PM ET"
+# But ALLOW daily resolution ones like:
+#   "Bitcoin Up or Down on April 10"
+#   "BTC up or down this week"
+_SHORTTERM_UPDOWN_PATTERN = _re.compile(
+    r'(?:bitcoin|btc|ethereum|eth|solana|sol|xrp|doge|crypto)'
+    r'.*(?:up or down|up/down)'
+    r'.*\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)',
+    _re.IGNORECASE
+)
+
+def is_blacklisted_market(question: str) -> bool:
+    """Returns True if the market is a short-term Up/Down gambling market.
+    Daily resolution markets (no hourly timestamp) are ALLOWED."""
+    if _SHORTTERM_UPDOWN_PATTERN.search(question):
+        return True
+    return False
+
+# ══════════════════════════════════════════════════════════════════
 # PATHS — Smart Volume Detection
 # ══════════════════════════════════════════════════════════════════
 # Priority: 1) JOURNAL_DIR env var  2) /data/journal (Railway Volume)  3) Local fallback
@@ -284,7 +309,13 @@ def db_close_position(pos_id: int, exit_price: float, reason: str) -> float:
     proceeds = shares * exit_price if shares else 0
     pnl_usd  = proceeds - amount_usd
     pnl_pct  = (pnl_usd / amount_usd * 100) if amount_usd > 0 else 0
-    result   = 'WIN' if pnl_usd > 0 else 'LOSS'
+    # VOID: P&L ~$0 (breakeven/ghost) should NOT count as LOSS
+    if abs(pnl_usd) < 0.005:
+        result = 'VOID'
+    elif pnl_usd > 0:
+        result = 'WIN'
+    else:
+        result = 'LOSS'
     ts       = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cur.execute('''UPDATE positions SET
         close_ts=?, exit_price=?, status="CLOSED",
@@ -336,8 +367,12 @@ def db_get_stats() -> dict:
         closed = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN'")
         open_c = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND pnl_usd>0")
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='WIN'")
         wins = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='LOSS'")
+        losses = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='VOID'")
+        voids = cur.fetchone()[0]
         cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED'")
         pnl = cur.fetchone()[0]
         cur.execute("SELECT COALESCE(SUM(amount_usd),0) FROM positions WHERE status='OPEN'")
@@ -346,16 +381,18 @@ def db_get_stats() -> dict:
                               entry_price,amount_usd,status,pnl_usd,close_reason
                        FROM positions ORDER BY id DESC LIMIT 8''')
         recent = cur.fetchall(); conn.close()
-        wr = (wins / closed * 100) if closed > 0 else 0
+        # Win Rate = Wins / (Wins + Losses) — VOID trades excluded
+        real_trades = wins + losses
+        wr = (wins / real_trades * 100) if real_trades > 0 else 0
         return {
             'total': total, 'closed': closed, 'open': open_c,
-            'wins': wins, 'losses': closed - wins, 'win_rate': wr,
+            'wins': wins, 'losses': losses, 'voids': voids, 'win_rate': wr,
             'pnl': pnl, 'exposure': exposure, 'recent': recent,
         }
     except Exception as e:
         log.error(f'db_get_stats error: {e}')
         return {'total': 0, 'closed': 0, 'open': 0, 'wins': 0,
-                'losses': 0, 'win_rate': 0, 'pnl': 0, 'exposure': 0, 'recent': []}
+                'losses': 0, 'voids': 0, 'win_rate': 0, 'pnl': 0, 'exposure': 0, 'recent': []}
 
 # ══════════════════════════════════════════════════════════════════
 # TELEGRAM
@@ -395,7 +432,12 @@ async def tg_open(session, r: dict, pos_id: int, amount: float):
     await tg(session, text)
 
 async def tg_close(session, pos: dict, exit_price: float, pnl: float, reason: str):
-    emoji = 'PROFIT' if pnl > 0 else 'RUGI'
+    if abs(pnl) < 0.005:
+        emoji = 'VOID'
+    elif pnl > 0:
+        emoji = 'PROFIT'
+    else:
+        emoji = 'RUGI'
     text = (
         f"<b>CLOSE #{pos['id']} [{emoji}]</b>\n"
         f"{'='*24}\n"
@@ -678,6 +720,9 @@ def process(m: dict, history: dict, clob_map: dict) -> Optional[dict]:
     try:
         q = (m.get('question') or '').strip()
         if not q: return None
+        # ── BLACKLIST: skip short-term gambling markets ──
+        if is_blacklisted_market(q):
+            return None
         liq    = float(m.get('liquidity') or 0)
         vol    = float(m.get('volume24hr') or m.get('volume') or 0)
         names  = parse_outcomes(m)
@@ -731,7 +776,46 @@ class PositionManager:
         max_exp = equity * CFG['MAX_EXPOSURE_PCT']
         if self.total_exposure >= max_exp:
             return False, f"Exposure penuh ${self.total_exposure:.2f}/${max_exp:.2f}"
+        # ── CIRCUIT BREAKER: 3 consecutive real losses → pause 1 hour ──
+        breaker = self._check_circuit_breaker()
+        if breaker:
+            return False, breaker
         return True, 'OK'
+
+    def _check_circuit_breaker(self) -> Optional[str]:
+        """If the last 3 REAL trades (WIN/LOSS, not VOID) are all LOSS,
+        block new entries for 1 hour after the last loss."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            # Get the last 3 non-VOID closed trades
+            cur.execute(
+                "SELECT result, close_ts FROM positions "
+                "WHERE status='CLOSED' AND result IN ('WIN','LOSS') "
+                "ORDER BY id DESC LIMIT 3"
+            )
+            rows = cur.fetchall()
+            conn.close()
+            if len(rows) < 3:
+                return None  # Not enough data
+            # Check if all 3 are LOSS
+            if all(r[0] == 'LOSS' for r in rows):
+                # Check time since last loss
+                last_loss_ts = rows[0][1]
+                if last_loss_ts:
+                    try:
+                        last_dt = datetime.strptime(last_loss_ts, '%Y-%m-%d %H:%M:%S')
+                        elapsed_h = (datetime.now() - last_dt).total_seconds() / 3600
+                        if elapsed_h < 1.0:  # 1 hour cooldown
+                            remaining = int((1.0 - elapsed_h) * 60)
+                            log.warning(f'[CIRCUIT BREAKER] 3 losses in a row! '
+                                        f'Cooldown: {remaining}m remaining')
+                            return f'CIRCUIT BREAKER 🛑 3 loss beruntun ({remaining}m cooldown)'
+                    except Exception:
+                        pass
+            return None
+        except Exception:
+            return None
 
     def _get_equity_fast(self) -> float:
         try:
@@ -816,19 +900,44 @@ class PositionManager:
         if not can:
             log.info(f'SKIP OPEN: {why}')
             return None
-        # ── DYNAMIC POSITION SIZING ──────────────────────────
-        # Calculate current equity = bankroll + total closed PnL
+        # ── TIERED POSITION SIZING ────────────────────────────
+        # Fixed tiers based on equity level for controlled growth
         equity = self._calculate_equity()
-        amount = equity * CFG['BET_PCT']             # 10% of equity
-        amount = max(CFG['MIN_BET'], min(CFG['MAX_BET'], amount))
-        amount = round(amount, 2)
+        amount = self._get_bet_size(equity)
         entry  = r['entry_price']
         shares = amount / entry if entry > 0 else 0
-        log.info(f'[SIZE] Equity=${equity:.2f} → Bet=${amount:.2f} ({CFG["BET_PCT"]*100:.0f}%)')
+        log.info(f'[SIZE] Equity=${equity:.2f} → Bet=${amount:.2f} (Tiered)')
         pos_id = db_open_position(r, amount, shares)
         await tg_open(session, r, pos_id, amount)
         await self.refresh()
         return pos_id
+
+    @staticmethod
+    def _get_bet_size(equity: float) -> float:
+        """Tiered position sizing based on equity level.
+        
+        Equity Tiers:
+            < $25   → $1.00
+            < $50   → $1.80
+            < $100  → $3.00
+            < $150  → $3.50
+            < $200  → $5.00
+            ≥ $200  → $5.00 + $2.50 for every $60 above $200
+        """
+        if equity < 25:
+            return 1.00
+        elif equity < 50:
+            return 1.80
+        elif equity < 100:
+            return 3.00
+        elif equity < 150:
+            return 3.50
+        elif equity < 200:
+            return 5.00
+        else:
+            # Above $200: base $5 + $2.50 per $60 increment
+            extra_tiers = (equity - 200) / 60
+            return round(5.00 + extra_tiers * 2.50, 2)
 
     def _calculate_equity(self) -> float:
         """Calculate current equity = bankroll + total realized PnL."""
@@ -855,10 +964,11 @@ def banner():
 
 def display_stats(st: dict, pm: 'PositionManager'):
     equity = pm._get_equity_fast()
-    next_bet = round(max(CFG['MIN_BET'], min(CFG['MAX_BET'], equity * CFG['BET_PCT'])), 2)
+    next_bet = pm._get_bet_size(equity)
     max_exp = equity * CFG['MAX_EXPOSURE_PCT']
+    void_str = f' | Void={st.get("voids", 0)}' if st.get('voids', 0) > 0 else ''
     print(f'\n  JOURNAL: Total={st["total"]} | Open={pm.count}/{CFG["MAX_POSITIONS"]} | '
-          f'Closed={st["closed"]} | Win={st["wins"]} | Loss={st["losses"]} | '
+          f'Closed={st["closed"]} | Win={st["wins"]} | Loss={st["losses"]}{void_str} | '
           f'WR={st["win_rate"]:.1f}% | P&L=${st["pnl"]:+.2f}')
     print(f'  Equity: ${equity:.2f} | NextBet: ${next_bet:.2f} | '
           f'Exposure: ${pm.total_exposure:.2f}/${max_exp:.2f} | '
