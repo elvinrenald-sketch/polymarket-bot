@@ -834,7 +834,7 @@ class PositionManager:
 
     def _check_circuit_breaker(self) -> Optional[str]:
         """If the last 3 REAL trades (WIN/LOSS, not VOID) are all LOSS,
-        block new entries for 30 minutes after the last loss."""
+        block new entries for 15 minutes after the last loss."""
         try:
             conn = sqlite3.connect(DB_PATH)
             cur = conn.cursor()
@@ -856,8 +856,8 @@ class PositionManager:
                     try:
                         last_dt = datetime.strptime(last_loss_ts, '%Y-%m-%d %H:%M:%S')
                         elapsed_h = (datetime.now() - last_dt).total_seconds() / 3600
-                        if elapsed_h < 0.5:  # 30 minute cooldown
-                            remaining = max(1, int((0.5 - elapsed_h) * 60))
+                        if elapsed_h < 0.25:  # 15 minute cooldown
+                            remaining = max(1, int((0.25 - elapsed_h) * 60))
                             log.warning(f'[CIRCUIT BREAKER] 3 losses in a row! '
                                         f'Cooldown: {remaining}m remaining')
                             return f'CIRCUIT BREAKER 🛑 3 loss beruntun ({remaining}m cooldown)'
