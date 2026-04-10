@@ -396,6 +396,17 @@ def db_get_open_market_ids() -> set:
     except Exception:
         return set()
 
+def db_get_open_market_questions() -> set:
+    """Gets a set of exact questions that are currently open to prevent duplicate cross-id betting."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur  = conn.cursor()
+        cur.execute("SELECT question FROM positions WHERE status='OPEN'")
+        rows = cur.fetchall(); conn.close()
+        return {r[0].strip() for r in rows if r[0]}
+    except Exception:
+        return set()
+
 def db_get_stats() -> dict:
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -1134,6 +1145,7 @@ async def main():
     pm            = PositionManager()
     await pm.refresh()
     already_opened = db_get_open_market_ids()
+    already_opened_questions = db_get_open_market_questions()
 
     connector = aiohttp.TCPConnector(limit=50, limit_per_host=15, ttl_dns_cache=300, ssl=False)
     hdrs = {'User-Agent': 'Mozilla/5.0 PolyBot/12.0', 'Accept': 'application/json'}
@@ -1159,6 +1171,7 @@ async def main():
                         await pm.refresh()
                         for c in closed_this_scan:
                             already_opened.discard(c['pos']['market_id'])
+                            already_opened_questions.discard(c['pos'].get('question', '').strip())
                 all_tids = []
                 for m in raw:
                     tids = parse_token_ids(m)
@@ -1200,6 +1213,7 @@ async def main():
                     r for r in results
                     if r.get('is_auto')
                     and r['id'] not in already_opened
+                    and r.get('question', '').strip() not in already_opened_questions
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
                     and r.get('spread_pct', 100) <= 8.0
                     and (r['days'] is None or r['days'] >= 0.02)
@@ -1242,6 +1256,7 @@ async def main():
                         pos_id = await pm.open_position(session, best)
                         if pos_id:
                             already_opened.add(best['id'])
+                            already_opened_questions.add(best.get('question', '').strip())
 
                 try:
                     c2 = sqlite3.connect(DB_PATH)
