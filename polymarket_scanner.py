@@ -123,7 +123,7 @@ CFG = {
     # Signal filters (Brain does the real filtering)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
     'MIN_MOMENTUM'        : 8.0,
-    'MIN_LIQUIDITY'       : 1000,
+    'MIN_LIQUIDITY'       : 2000,
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
@@ -1215,6 +1215,7 @@ async def main():
                     and r['id'] not in already_opened
                     and r.get('question', '').strip() not in already_opened_questions
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
+                    and r.get('entry_price', 1.0) <= 0.80
                     and r.get('spread_pct', 100) <= 8.0
                     and (r['days'] is None or r['days'] >= 0.02)
                 ]
