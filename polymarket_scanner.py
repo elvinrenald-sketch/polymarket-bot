@@ -270,6 +270,45 @@ def init_db():
     conn.commit()
     conn.close()
     log.info(f'DB OK: {DB_PATH}')
+    # Run one-time migration to fix old data
+    _migrate_void_trades()
+
+def _migrate_void_trades():
+    """One-time migration: convert old LOSS trades with P&L ~$0 to VOID.
+    This cleans the ML training data and corrects win rate."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        # Find all CLOSED trades marked as LOSS but with P&L near $0
+        cur.execute(
+            "SELECT COUNT(*) FROM positions "
+            "WHERE status='CLOSED' AND result='LOSS' AND ABS(pnl_usd) < 0.005"
+        )
+        count = cur.fetchone()[0]
+        if count > 0:
+            cur.execute(
+                "UPDATE positions SET result='VOID' "
+                "WHERE status='CLOSED' AND result='LOSS' AND ABS(pnl_usd) < 0.005"
+            )
+            conn.commit()
+            log.info(f'[MIGRATION] Converted {count} ghost trades from LOSS → VOID')
+            # Show corrected stats
+            cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='WIN'")
+            wins = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='LOSS'")
+            losses = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='VOID'")
+            voids = cur.fetchone()[0]
+            real = wins + losses
+            wr = (wins / real * 100) if real > 0 else 0
+            log.info(f'[MIGRATION] Corrected stats: Win={wins} | Loss={losses} | '
+                     f'Void={voids} | WR={wr:.1f}% (was {wins}/{wins+losses+count}='
+                     f'{wins/(wins+losses+count)*100:.1f}%)')
+        else:
+            log.info('[MIGRATION] No ghost trades to fix — data is clean')
+        conn.close()
+    except Exception as e:
+        log.warning(f'[MIGRATION] Error: {e}')
 
 def db_open_position(r: dict, amount: float, shares: float) -> int:
     ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
