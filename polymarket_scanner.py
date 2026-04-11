@@ -112,7 +112,8 @@ CFG = {
     'CLEAR_SCREEN'        : False,   # Railway tidak punya terminal
 
     # Risk Management — Dynamic Sizing
-    'BANKROLL'            : 20.00,     # Starting equity
+    'BANKROLL'            : 10.00,     # Starting equity
+    'STATS_RESET_TS'      : '2026-04-12 01:15:00', # Tampilkan trade SETELAH waktu ini. History tetap dipakai oleh ML!
     'BET_PCT'             : 0.10,      # 10% of equity per trade ($10→$1, $20→$2)
     'MIN_BET'             : 1.00,      # Minimum $1 (Polymarket requirement)
     'MAX_BET'             : 5.00,      # Maximum bet $5.00
@@ -549,25 +550,27 @@ def db_get_stats() -> dict:
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute('SELECT COUNT(*) FROM positions')
+        reset_ts = CFG.get('STATS_RESET_TS', '2000-01-01 00:00:00')
+        
+        cur.execute("SELECT COUNT(*) FROM positions WHERE open_ts >= ?", (reset_ts,))
         total = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED'")
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND open_ts >= ?", (reset_ts,))
         closed = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN'")
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN' AND open_ts >= ?", (reset_ts,))
         open_c = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='WIN'")
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='WIN' AND open_ts >= ?", (reset_ts,))
         wins = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='LOSS'")
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='LOSS' AND open_ts >= ?", (reset_ts,))
         losses = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='VOID'")
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='VOID' AND open_ts >= ?", (reset_ts,))
         voids = cur.fetchone()[0]
-        cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED'")
+        cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED' AND open_ts >= ?", (reset_ts,))
         pnl = cur.fetchone()[0]
-        cur.execute("SELECT COALESCE(SUM(amount_usd),0) FROM positions WHERE status='OPEN'")
+        cur.execute("SELECT COALESCE(SUM(amount_usd),0) FROM positions WHERE status='OPEN' AND open_ts >= ?", (reset_ts,))
         exposure = cur.fetchone()[0]
         cur.execute('''SELECT open_ts,signal,substr(question,1,30),
                               entry_price,amount_usd,status,pnl_usd,close_reason
-                       FROM positions ORDER BY id DESC LIMIT 8''')
+                       FROM positions WHERE open_ts >= ? ORDER BY id DESC LIMIT 8''', (reset_ts,))
         recent = cur.fetchall(); conn.close()
         # Win Rate = Wins / (Wins + Losses) — VOID trades excluded
         real_trades = wins + losses
