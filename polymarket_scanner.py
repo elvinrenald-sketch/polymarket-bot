@@ -301,6 +301,12 @@ async def api_closeall():
     WEB_TRIGGER_CLOSE_ALL = True
     return {"status": "ok"}
 
+@app.post("/api/close_position/{pos_id}")
+async def api_close_position(pos_id: int):
+    global WEB_TRIGGER_CLOSE_POS_IDS
+    WEB_TRIGGER_CLOSE_POS_IDS.add(pos_id)
+    return {"status": "ok", "pos_id": pos_id}
+
 @app.websocket("/api/logs")
 async def websocket_logs(websocket: WebSocket):
     await websocket.accept()
@@ -313,6 +319,7 @@ async def websocket_logs(websocket: WebSocket):
         WS_CLIENTS.remove(websocket)
 
 WEB_TRIGGER_CLOSE_ALL = False
+WEB_TRIGGER_CLOSE_POS_IDS = set()
 
 async def start_web_server():
     port = int(os.environ.get('PORT', 8080))
@@ -1512,6 +1519,7 @@ async def main():
                 
                 # --- HANDLE EMERGENCY CLOSE FROM WEB ---
                 global WEB_TRIGGER_CLOSE_ALL
+                global WEB_TRIGGER_CLOSE_POS_IDS
                 if WEB_TRIGGER_CLOSE_ALL:
                     log.info("[WEB UI] Executing EMERGENCY CLOSE ALL")
                     ops = db_get_open_positions()
@@ -1525,6 +1533,24 @@ async def main():
                         already_opened_questions.discard(op.get('question', '').strip())
                     await pm.refresh()
                     WEB_TRIGGER_CLOSE_ALL = False
+
+                if WEB_TRIGGER_CLOSE_POS_IDS:
+                    ops = db_get_open_positions()
+                    closed_any = False
+                    for op in ops:
+                        if op['id'] in WEB_TRIGGER_CLOSE_POS_IDS:
+                            log.info(f"[WEB UI] Executing MANUAL CLOSE for Pos #{op['id']}")
+                            cur_price = await fetch_price(session, op['token_id'])
+                            if cur_price is None:
+                                cur_price = op['entry_price']
+                            pnl = db_close_position(op['id'], cur_price, "WEB_MANUAL_CLOSE")
+                            await tg_close(session, op, cur_price, pnl, "WEB_MANUAL_CLOSE")
+                            already_opened.discard(op['market_id'])
+                            already_opened_questions.discard(op.get('question', '').strip())
+                            closed_any = True
+                    if closed_any:
+                        await pm.refresh()
+                    WEB_TRIGGER_CLOSE_POS_IDS.clear()
                 # ---------------------------------------
 
                 display(top, {'scans': scans, 'fetched': len(raw), 'valid': len(results), 'ms': ms}, stats_j, pm, closed_this_scan)

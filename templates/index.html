@@ -295,7 +295,8 @@
 
             // 2. Add or update active rows
             data.positions.forEach(p => {
-                const id = p.pos.market_id;
+                const id = p.pos.market_id; // For DOM tracking
+                const posId = p.pos.id; // DB Position ID for closing
                 let tr = tbody.querySelector(`tr[data-id="${id}"]`);
                 
                 const isBuy = p.pos.token_id === p.pos.market_id + '_yes';
@@ -306,7 +307,7 @@
                     // Create new row if it doesn't exist yet
                     tr = document.createElement('tr');
                     tr.dataset.id = id;
-                    tr.className = "border-b border-[#0a150a] hover:bg-[#112211] transition-colors";
+                    tr.className = "border-b border-[#0a150a] hover:bg-[#112211] transition-colors relative group";
                     
                     const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
                     tr.innerHTML = `
@@ -314,7 +315,10 @@
                         <td class="truncate max-w-[200px]" title="${p.pos.question}">${p.pos.question}</td>
                         <td class="text-right text-gray-400">$${parseFloat(p.pos.price_at_open).toFixed(3)}</td>
                         <td class="text-right text-white font-mono current-price" data-val="${currentPrice}">$${currentPrice.toFixed(3)}</td>
-                        <td class="text-right font-bold font-mono current-pnl" data-val="${pnl}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}$</td>
+                        <td class="text-right font-bold font-mono current-pnl bg-[#050505]" data-val="${pnl}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}$</td>
+                        <td class="text-right w-8 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onclick="closePosition(${posId})" title="Close Position #${posId}" class="text-[#ff3333] hover:text-white hover:bg-[#ff3333] bg-[#110000] border border-[#ff3333] px-2 rounded font-bold text-xs">X</button>
+                        </td>
                     `;
                     tbody.appendChild(tr);
                 }
@@ -329,6 +333,14 @@
             // Drift metric
             document.getElementById('spec-status').innerText = `SIG: ${(signalCount + Math.random()).toFixed(1)} Hz`;
             updateDrift(avgScore, data.ping_ms);
+        }
+
+        async function closePosition(posId) {
+            if(confirm(`DANGER: Force close position #${posId}?`)) {
+                await fetch(`/api/close_position/${posId}`, { method: 'POST' });
+                alert(`Close initiated for Pos #${posId}.`);
+                fetchState();
+            }
         }
 
         async function closeAll() {
