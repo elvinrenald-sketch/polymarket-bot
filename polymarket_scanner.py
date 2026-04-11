@@ -540,7 +540,18 @@ async def telegram_listener(session, pm):
                                 continue
                             txt = f"<b>POSISI AKTIF ({len(ops)}/{CFG['MAX_POSITIONS']})</b>\n\n"
                             for op in ops:
-                                txt += f"#{op['id']} <b>{op['question'][:40]}...</b>\nEntry: {op['entry_price']:.4f} | Size: ${op.get('amount_usd', 0):.2f}\n\n"
+                                cur_price = await fetch_price(session, op['token_id'])
+                                pnl_str = "<i>N/A</i>"
+                                cur_price_str = "<i>N/A</i>"
+                                
+                                if cur_price is not None:
+                                    cur_price_str = f"{cur_price:.4f}"
+                                    pnl = (cur_price - op['entry_price']) * op.get('shares', 0)
+                                    pnl_str = f"<b>${pnl:+.2f}</b>"
+                                    
+                                txt += f"#{op['id']} <b>{op['question'][:40]}...</b>\n"
+                                txt += f"Entry: {op['entry_price']:.4f} | Cur: {cur_price_str}\n"
+                                txt += f"Size: ${op.get('amount_usd', 0):.2f} | PnL: {pnl_str}\n\n"
                             await tg(session, txt)
                             
                         elif text.startswith('/closeall'):
