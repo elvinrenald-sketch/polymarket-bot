@@ -1064,22 +1064,23 @@ class TradingBrain:
 
         if category == 'crypto' or prob.get('has_external_data'):
             # ── CRYPTO MARKETS ── (has external data)
-            news_boost = news_sentiment * 25 if news_data.get('has_news') else 0
             if has_ml:
-                # Max 100 Points = 35 ML + 20 Heuristic + 25 News + 20 External
+                # Max 100 Points = 30 ML + 30 News + 10 Heuristic + 20 External (+10 Bonus)
+                news_boost = news_sentiment * 30 if news_data.get('has_news') else 0
                 ext_boost = min(20, abs(prob.get('divergence', 0)) * 100)
                 brain_score = (
-                    ml_pred * 100 * 0.35 +
-                    heuristic * 0.20 +
+                    ml_pred * 100 * 0.30 +
+                    heuristic * 0.10 +
                     news_boost +
                     ext_boost +
                     (10 if prob.get('has_external_data') else 0)
                 )
             else:
-                # No ML model
+                # No ML model -> Max 100 Points = 35 News + 20 Heuristic + 35 External (+10 Bonus)
+                news_boost = news_sentiment * 35 if news_data.get('has_news') else 0
                 ext_boost = min(35, abs(prob.get('divergence', 0)) * 100)
                 brain_score = (
-                    heuristic * 0.30 +
+                    heuristic * 0.20 +
                     news_boost +
                     ext_boost +
                     (10 if prob.get('has_external_data') else 0)
