@@ -1062,28 +1062,45 @@ class TradingBrain:
         # ─── Step 6: Combined brain_score ─────────────────────
         heuristic = self._heuristic_score(signal_data)
 
-        # News boost/penalty: convert sentiment (-1..+1) to score boost (-25..+25)
-        news_boost = news_sentiment * 25 if news_data.get('has_news') else 0
-
-        if has_ml:
-            # ML model trained → Max 100 Points = 35 ML + 20 Heuristic + 25 News + 20 External
-            ext_boost = min(20, abs(prob.get('divergence', 0)) * 100)
-            brain_score = (
-                ml_pred * 100 * 0.35 +
-                heuristic * 0.20 +
-                news_boost +
-                ext_boost +
-                (10 if prob.get('has_external_data') else 0)
-            )
+        if category == 'crypto' or prob.get('has_external_data'):
+            # ── CRYPTO MARKETS ── (has external data)
+            news_boost = news_sentiment * 25 if news_data.get('has_news') else 0
+            if has_ml:
+                # Max 100 Points = 35 ML + 20 Heuristic + 25 News + 20 External
+                ext_boost = min(20, abs(prob.get('divergence', 0)) * 100)
+                brain_score = (
+                    ml_pred * 100 * 0.35 +
+                    heuristic * 0.20 +
+                    news_boost +
+                    ext_boost +
+                    (10 if prob.get('has_external_data') else 0)
+                )
+            else:
+                # No ML model
+                ext_boost = min(35, abs(prob.get('divergence', 0)) * 100)
+                brain_score = (
+                    heuristic * 0.30 +
+                    news_boost +
+                    ext_boost +
+                    (10 if prob.get('has_external_data') else 0)
+                )
         else:
-            # No ML model → Max 100 Points = 30 Heuristic + 25 News + 45 External
-            ext_boost = min(35, abs(prob.get('divergence', 0)) * 100)
-            brain_score = (
-                heuristic * 0.30 +
-                news_boost +
-                ext_boost +
-                (10 if prob.get('has_external_data') else 0)
-            )
+            # ── NON-CRYPTO MARKETS ── (No external data: Politics, Sports, General)
+            if has_ml:
+                # Max 100 Points = 50 ML + 30 News + 20 Heuristic
+                news_boost = news_sentiment * 30 if news_data.get('has_news') else 0
+                brain_score = (
+                    ml_pred * 100 * 0.50 +
+                    news_boost +
+                    heuristic * 0.20
+                )
+            else:
+                # No ML model -> 60 Heuristic + 40 News
+                news_boost = news_sentiment * 40 if news_data.get('has_news') else 0
+                brain_score = (
+                    heuristic * 0.60 +
+                    news_boost
+                )
 
         brain_score = round(max(0, min(100, brain_score)), 1)
 
