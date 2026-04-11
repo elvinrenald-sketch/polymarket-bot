@@ -1062,26 +1062,26 @@ class TradingBrain:
         # ─── Step 6: Combined brain_score ─────────────────────
         heuristic = self._heuristic_score(signal_data)
 
-        # News boost/penalty: convert sentiment (-1..+1) to score boost (-15..+15)
-        news_boost = news_sentiment * 15 if news_data.get('has_news') else 0
+        # News boost/penalty: convert sentiment (-1..+1) to score boost (-25..+25)
+        news_boost = news_sentiment * 25 if news_data.get('has_news') else 0
 
         if has_ml:
-            # ML model trained → weight: 35% ML, 25% heuristic, 25% external, 15% news
+            # ML model trained → Max 100 Points = 35 ML + 20 Heuristic + 25 News + 20 External
             ext_boost = min(20, abs(prob.get('divergence', 0)) * 100)
             brain_score = (
                 ml_pred * 100 * 0.35 +
-                heuristic * 0.25 +
-                ext_boost * 0.25 +
-                news_boost * 0.15 +
+                heuristic * 0.20 +
+                news_boost +
+                ext_boost +
                 (10 if prob.get('has_external_data') else 0)
             )
         else:
-            # No ML model → weight: 50% heuristic, 30% external, 20% news
-            ext_boost = min(25, abs(prob.get('divergence', 0)) * 100)
+            # No ML model → Max 100 Points = 30 Heuristic + 25 News + 45 External
+            ext_boost = min(35, abs(prob.get('divergence', 0)) * 100)
             brain_score = (
-                heuristic * 0.50 +
-                ext_boost * 0.30 +
-                news_boost * 0.20 +
+                heuristic * 0.30 +
+                news_boost +
+                ext_boost +
                 (10 if prob.get('has_external_data') else 0)
             )
 
