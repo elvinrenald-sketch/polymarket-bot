@@ -1087,18 +1087,18 @@ class TradingBrain:
         else:
             # ── NON-CRYPTO MARKETS ── (No external data: Politics, Sports, General)
             if has_ml:
-                # Max 100 Points = 50 ML + 30 News + 20 Heuristic
-                news_boost = news_sentiment * 30 if news_data.get('has_news') else 0
+                # Max 100 Points = 30 ML + 45 News + 25 Heuristic
+                news_boost = news_sentiment * 45 if news_data.get('has_news') else 0
                 brain_score = (
-                    ml_pred * 100 * 0.50 +
+                    ml_pred * 100 * 0.30 +
                     news_boost +
-                    heuristic * 0.20
+                    heuristic * 0.25
                 )
             else:
-                # No ML model -> 60 Heuristic + 40 News
-                news_boost = news_sentiment * 40 if news_data.get('has_news') else 0
+                # No ML model -> 55 News + 45 Heuristic
+                news_boost = news_sentiment * 55 if news_data.get('has_news') else 0
                 brain_score = (
-                    heuristic * 0.60 +
+                    heuristic * 0.45 +
                     news_boost
                 )
 
