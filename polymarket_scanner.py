@@ -559,10 +559,14 @@ async def telegram_listener(session, pm):
                             ops = db_get_open_positions()
                             count = 0
                             for op in ops:
-                                # For manual close in paper trading, flat exit to prevent bad PNL
-                                pnl = db_close_position(op['id'], op['entry_price'], "MANUAL_CLOSEALL")
-                                await tg_close(session, op, op['entry_price'], pnl, "MANUAL_CLOSEALL")
+                                cur_price = await fetch_price(session, op['token_id'])
+                                if cur_price is None:
+                                    cur_price = op['entry_price']  # Fallback to a flat exit if API fails
+                                    
+                                pnl = db_close_position(op['id'], cur_price, "MANUAL_CLOSEALL")
+                                await tg_close(session, op, cur_price, pnl, "MANUAL_CLOSEALL")
                                 count += 1
+                                
                             if count > 0:
                                 await pm.refresh()
                                 await tg(session, f"<b>INFO:</b> {count} Posisi ditutup paksa.")
