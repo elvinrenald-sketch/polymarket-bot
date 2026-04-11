@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-width=1.0">
+    <title>Quant Terminal | Polymarket</title>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+        body {
+            background-color: #050505;
+            color: #00ff00;
+            font-family: 'Share Tech Mono', monospace;
+            overflow-x: hidden;
+        }
+        
+        .quant-panel {
+            background: rgba(10, 15, 10, 0.9);
+            border: 1px solid #1a331a;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.05);
+            border-radius: 4px;
+        }
+
+        .quant-text-red { color: #ff3333; }
+        .quant-text-green { color: #00ff00; }
+        .quant-text-cyan { color: #00ffff; }
+        .quant-bg-red { background-color: #ff3333; }
+        .quant-bg-green { background-color: #00ff00; }
+
+        .terminal-scroll::-webkit-scrollbar { width: 4px; }
+        .terminal-scroll::-webkit-scrollbar-track { background: #000; }
+        .terminal-scroll::-webkit-scrollbar-thumb { background: #004400; }
+
+        .blinking-cursor {
+            font-weight: bold;
+            font-size: 1.2rem;
+            animation: 1s blink step-end infinite;
+        }
+
+        @keyframes blink {
+            from, to { color: transparent; }
+            50% { color: #00ff00; }
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            text-shadow: 0 0 8px rgba(0, 255, 0, 0.4);
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #888;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col p-2 space-y-2">
+    <!-- Header -->
+    <header class="flex justify-between items-center px-4 py-2 quant-panel">
+        <div class="flex items-center space-x-4">
+            <span class="text-xl font-bold tracking-widest text-[#00ffff]">BRUTAL POLY TERMINAL <span class="blinking-cursor">_</span></span>
+            <span class="text-xs text-gray-500">v15.0</span>
+        </div>
+        <div class="flex space-x-6 text-sm text-gray-400" id="header-stats">
+            <span>SCANS: <span id="v-scans" class="quant-text-green">0</span></span>
+            <span>OPEN: <span id="v-open-count" class="text-white">0</span>/5</span>
+            <span>PING: <span id="v-ping" class="text-white">0ms</span></span>
+        </div>
+        <div>
+            <button onclick="closeAll()" class="px-4 py-1 border border-red-500 text-red-500 hover:bg-red-500 hover:text-black transition-colors text-sm uppercase tracking-wider">Emergency Close All</button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 grid grid-cols-12 gap-2 overflow-hidden">
+        
+        <!-- Left Col: Live Trades / Scans -->
+        <div class="col-span-3 quant-panel flex flex-col p-3 overflow-hidden">
+            <h2 class="text-xs mb-3 text-gray-500 tracking-widest border-b border-[#1a331a] pb-1">LIVE TRADES SCANNER</h2>
+            <div id="live-trades" class="flex-1 overflow-y-auto terminal-scroll space-y-2 text-xs">
+                <!-- Data injected by JS -->
+            </div>
+        </div>
+
+        <!-- Center Col: Chart & Stats -->
+        <div class="col-span-6 flex flex-col space-y-2 overflow-hidden">
+            <!-- Top Stats -->
+            <div class="grid grid-cols-4 gap-2 h-24">
+                <div class="quant-panel flex flex-col justify-center items-center">
+                    <div class="stat-label">P/L TOTAL</div>
+                    <div class="stat-value quant-text-green" id="v-pnl">+$0.00</div>
+                </div>
+                <div class="quant-panel flex flex-col justify-center items-center">
+                    <div class="stat-label">WIN RATE</div>
+                    <div class="stat-value text-[#00ffff]" id="v-winrate">0%</div>
+                </div>
+                <div class="quant-panel flex flex-col justify-center items-center">
+                    <div class="stat-label">TOTAL TRADES</div>
+                    <div class="stat-value text-white" id="v-trades">0</div>
+                </div>
+                <div class="quant-panel flex flex-col justify-center items-center">
+                    <div class="stat-label">MAX EXPOSURE</div>
+                    <div class="stat-value text-orange-400">50.0%</div>
+                </div>
+            </div>
+
+            <!-- Chart -->
+            <div class="quant-panel flex-1 p-2 relative">
+                <span class="absolute top-2 left-2 text-[10px] text-gray-600 tracking-widest z-10">EQUITY CURVE (REALIZED PNL)</span>
+                <div id="chart" class="w-full h-full"></div>
+            </div>
+            
+            <!-- Bottom: Active Positions -->
+            <div class="quant-panel h-1/3 flex flex-col p-2">
+                <h2 class="text-[10px] mb-2 text-gray-500 tracking-widest">ACTIVE POSITIONS (REAL-TIME)</h2>
+                <div class="overflow-y-auto terminal-scroll flex-1">
+                    <table class="w-full text-xs text-left">
+                        <thead class="text-gray-600 border-b border-[#1a331a]">
+                            <tr>
+                                <th class="pb-1">ACTION</th>
+                                <th class="pb-1">MARKET</th>
+                                <th class="pb-1 text-right">ENTRY</th>
+                                <th class="pb-1 text-right">CURRENT</th>
+                                <th class="pb-1 text-right">P/L</th>
+                            </tr>
+                        </thead>
+                        <tbody id="active-positions" class="text-gray-300">
+                            <!-- Injected by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Col: Runtime Matrix Console -->
+        <div class="col-span-3 quant-panel flex flex-col p-3 overflow-hidden">
+            <h2 class="text-xs mb-3 text-gray-500 tracking-widest border-b border-[#1a331a] pb-1">RUNTIME CONSOLE</h2>
+            <div id="console" class="flex-1 overflow-y-auto terminal-scroll text-[11px] leading-tight text-gray-400 break-words whitespace-pre-wrap font-mono relative">
+                <!-- Logs injected via websockets -->
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Chart setup
+        var options = {
+            series: [{
+                name: 'PnL',
+                data: []
+            }],
+            chart: {
+                type: 'area',
+                height: '100%',
+                animations: { enabled: true, easing: 'linear', dynamicAnimation: { speed: 1000 } },
+                toolbar: { show: false },
+                zoom: { enabled: false },
+                background: 'transparent',
+                foreColor: '#444'
+            },
+            colors: ['#00ff00'],
+            fill: {
+                type: 'gradient',
+                gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.0, stops: [0, 100] }
+            },
+            dataLabels: { enabled: false },
+            stroke: { curve: 'smooth', width: 2 },
+            xaxis: {
+                type: 'numeric',
+                labels: { show: false },
+                axisBorder: { show: false },
+                axisTicks: { show: false }
+            },
+            yaxis: {
+                labels: { formatter: (val) => '$' + val.toFixed(2), style: { colors: '#666' } }
+            },
+            grid: { borderColor: '#1a331a', strokeDashArray: 2, xaxis: { lines: { show: true } }, yaxis: { lines: { show: true } } },
+            theme: { mode: 'dark' }
+        };
+
+        var chart = new ApexCharts(document.querySelector("#chart"), options);
+        chart.render();
+
+        // Data Polling
+        async function fetchState() {
+            try {
+                const res = await fetch('/api/state');
+                const data = await res.json();
+                updateUI(data);
+            } catch (err) {
+                console.error("State fetch error:", err);
+            }
+        }
+
+        function updateUI(data) {
+            // Header
+            document.getElementById('v-scans').innerText = data.scans;
+            document.getElementById('v-ping').innerText = data.ping_ms + 'ms';
+            document.getElementById('v-open-count').innerText = data.positions.length;
+            
+            // Stats
+            const pnlStr = (data.stats.realized_pnl >= 0 ? '+' : '') + '$' + data.stats.realized_pnl.toFixed(2);
+            const pnlEl = document.getElementById('v-pnl');
+            pnlEl.innerText = pnlStr;
+            pnlEl.className = 'stat-value ' + (data.stats.realized_pnl >= 0 ? 'quant-text-green' : 'quant-text-red');
+            document.getElementById('v-trades').innerText = data.stats.closed_trades;
+            document.getElementById('v-winrate').innerText = data.stats.win_rate.toFixed(1) + '%';
+
+            // Chart update
+            chart.updateSeries([{
+                data: data.equity_curve || []
+            }]);
+
+            // Live Trades
+            const topHTML = data.top_scans.map(s => {
+                const isBuy = s.action === 'BUY';
+                const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
+                const scoreStr = s.brain_score !== undefined ? `<span class="text-blue-400">SC:${s.brain_score.toFixed(1)}</span>` : '';
+                return `
+                <div class="flex justify-between items-center py-1">
+                    <span class="${actionClass} font-bold w-10">${s.action}</span>
+                    <span class="text-gray-300 truncate flex-1 mx-2" title="${s.question}">${s.question.substring(0,25)}</span>
+                    <span class="text-white w-8 text-right">${s.entry_price.toFixed(2)}$</span>
+                    <span class="text-right w-16">${scoreStr}</span>
+                </div>`;
+            }).join('');
+            document.getElementById('live-trades').innerHTML = topHTML;
+
+            // Active Positions
+            const posHTML = data.positions.map(p => {
+                const isBuy = p.pos.token_id === p.pos.market_id + '_yes'; // approximation
+                const actionStr = isBuy ? 'BUY' : 'SELL';
+                const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
+                const pnl = parseFloat(p.pnl || 0);
+                const pnlClass = pnl >= 0 ? 'quant-text-green' : 'quant-text-red';
+                return `
+                <tr class="border-b border-[#0a150a]">
+                    <td class="${actionClass} font-bold py-2">${actionStr}</td>
+                    <td class="truncate max-w-[200px]" title="${p.pos.question}">${p.pos.question}</td>
+                    <td class="text-right">$${parseFloat(p.pos.price_at_open).toFixed(2)}</td>
+                    <td class="text-right text-white">$${(p.live_price || 0).toFixed(2)}</td>
+                    <td class="text-right ${pnlClass} font-bold">${pnl >= 0 ? '+'+pnl.toFixed(2) : pnl.toFixed(2)}$</td>
+                </tr>`;
+            }).join('');
+            document.getElementById('active-positions').innerHTML = posHTML;
+        }
+
+        async function closeAll() {
+            if(confirm("DANGER: Force close all active positions at market price?")) {
+                await fetch('/api/closeall', { method: 'POST' });
+                alert("Close All executed.");
+                fetchState();
+            }
+        }
+
+        setInterval(fetchState, 2000);
+        fetchState();
+
+        // WebSocket for logs
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(wsProtocol + '//' + window.location.host + '/api/logs');
+        const consoleEl = document.getElementById('console');
+        
+        ws.onmessage = function(event) {
+            const span = document.createElement('div');
+            span.className = 'mb-1';
+            
+            let text = event.data;
+            if(text.includes('ERROR') || text.includes('REJECTED')) {
+                span.classList.add('text-red-500');
+            } else if(text.includes('APPROVED') || text.includes('STRONG BUY')) {
+                span.classList.add('text-green-400');
+            } else if(text.includes('[BRAIN]')) {
+                span.classList.add('text-blue-400');
+            } else {
+                span.classList.add('text-gray-500');
+            }
+            
+            span.textContent = text;
+            consoleEl.appendChild(span);
+            if(consoleEl.childNodes.length > 200) {
+                consoleEl.removeChild(consoleEl.firstChild);
+            }
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        };
+        
+        ws.onclose = () => console.log("WebSocket closed");
+    </script>
+</body>
+</html>

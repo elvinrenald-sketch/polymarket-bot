@@ -37,8 +37,16 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 from pathlib import Path
+
+# --- FASTAPI WEB UI IMPORTS ---
+import uvicorn
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
+# ------------------------------
 
 try:
     from intelligence import TradingBrain
@@ -190,6 +198,88 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger('poly')
+
+# ══════════════════════════════════════════════════════════════════
+# QUANT TERMINAL WEB DASHBOARD
+# ══════════════════════════════════════════════════════════════════
+
+class GlobalState:
+    scans: int = 0
+    ping_ms: int = 0
+    stats: Dict[str, Any] = {'closed_trades': 0, 'realized_pnl': 0, 'win_rate': 0.0}
+    positions: List[Dict[str, Any]] = []
+    top_scans: List[Dict[str, Any]] = []
+    equity_curve: List[float] = []
+
+WEB_STATE = GlobalState()
+WS_CLIENTS: List[WebSocket] = []
+
+class WebSocketLogHandler(logging.Handler):
+    def emit(self, record):
+        if not WS_CLIENTS:
+            return
+        msg = self.format(record)
+        # Avoid blocking asyncio loops by pushing to a queue or sending directly if threadsafe.
+        # Simple fire-and-forget for now, handled safely in async contexts.
+        for ws in WS_CLIENTS:
+            try:
+                # We can only await in an async function. Since logging might be sync,
+                # we push it to the running loop if we are in one.
+                loop = asyncio.get_running_loop()
+                loop.create_task(ws.send_text(msg))
+            except Exception:
+                pass
+
+ws_log_handler = WebSocketLogHandler()
+ws_log_handler.setFormatter(logging.Formatter('%(message)s'))
+log.addHandler(ws_log_handler)
+
+app = FastAPI(title="Quant Terminal")
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
+templates = Jinja2Templates(directory="templates")
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/api/state")
+async def get_state():
+    return {
+        "scans": WEB_STATE.scans,
+        "ping_ms": WEB_STATE.ping_ms,
+        "stats": WEB_STATE.stats,
+        "positions": WEB_STATE.positions,
+        "top_scans": WEB_STATE.top_scans,
+        "equity_curve": WEB_STATE.equity_curve
+    }
+
+@app.post("/api/closeall")
+async def api_closeall():
+    # Will trigger the same logic as Telegram `/closeall`
+    # We will flag it via a global variable that the main loop checks
+    global WEB_TRIGGER_CLOSE_ALL
+    WEB_TRIGGER_CLOSE_ALL = True
+    return {"status": "ok"}
+
+@app.websocket("/api/logs")
+async def websocket_logs(websocket: WebSocket):
+    await websocket.accept()
+    WS_CLIENTS.append(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        WS_CLIENTS.remove(websocket)
+
+WEB_TRIGGER_CLOSE_ALL = False
+
+async def start_web_server():
+    port = int(os.environ.get('PORT', 8080))
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    log.info(f"[WEB UI] Starting Quant Terminal on port {port}")
+    await server.serve()
 
 # ══════════════════════════════════════════════════════════════════
 # HELPERS
@@ -1244,6 +1334,8 @@ async def main():
             await tg(session, f'<b>Polymarket Auto Bot v15.0 (Intelligence Engine)</b>\nMode: <b>{mode}</b>')
             # Start background task to listen for /posisi and /closeall commands
             asyncio.create_task(telegram_listener(session, pm))
+            
+        asyncio.create_task(start_web_server())
 
         while True:
             t0               = time.time()
@@ -1357,6 +1449,43 @@ async def main():
                 except Exception: pass
 
                 stats_j = db_get_stats()
+                
+                # --- UPDATE WEB STATE ---
+                WEB_STATE.scans = scans
+                WEB_STATE.ping_ms = ms
+                WEB_STATE.stats = stats_j
+                WEB_STATE.top_scans = top
+                active_poses = []
+                for open_pos in pm.open_positions:
+                    cp = await fetch_price(session, open_pos['token_id'])
+                    pl = None
+                    if cp is not None:
+                        pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
+                    active_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
+                WEB_STATE.positions = active_poses
+                
+                if not WEB_STATE.equity_curve or WEB_STATE.equity_curve[-1] != stats_j['pnl']:
+                    WEB_STATE.equity_curve.append(stats_j['pnl'])
+                    if len(WEB_STATE.equity_curve) > 100:
+                        WEB_STATE.equity_curve = WEB_STATE.equity_curve[-100:]
+                
+                # --- HANDLE EMERGENCY CLOSE FROM WEB ---
+                global WEB_TRIGGER_CLOSE_ALL
+                if WEB_TRIGGER_CLOSE_ALL:
+                    log.info("[WEB UI] Executing EMERGENCY CLOSE ALL")
+                    ops = db_get_open_positions()
+                    for op in ops:
+                        cur_price = await fetch_price(session, op['token_id'])
+                        if cur_price is None:
+                            cur_price = op['entry_price']
+                        pnl = db_close_position(op['id'], cur_price, "WEB_CLOSEALL")
+                        await tg_close(session, op, cur_price, pnl, "WEB_CLOSEALL")
+                        already_opened.discard(op['market_id'])
+                        already_opened_questions.discard(op.get('question', '').strip())
+                    await pm.refresh()
+                    WEB_TRIGGER_CLOSE_ALL = False
+                # ---------------------------------------
+
                 display(top, {'scans': scans, 'fetched': len(raw), 'valid': len(results), 'ms': ms}, stats_j, pm, closed_this_scan)
 
             except KeyboardInterrupt:
