@@ -695,6 +695,26 @@ async def telegram_listener(session, pm):
                                 txt += f"Size: ${op.get('amount_usd', 0):.2f} | PnL: {pnl_str}\n\n"
                             await tg(session, txt)
                             
+                        elif text.startswith('/close '):
+                            try:
+                                pos_id = int(text.split(' ')[1].strip())
+                                ops = db_get_open_positions()
+                                target_op = next((op for op in ops if op['id'] == pos_id), None)
+                                
+                                if not target_op:
+                                    await tg(session, f"<b>ERROR:</b> Posisi #{pos_id} tidak ditemukan atau sudah tertutup.")
+                                else:
+                                    await tg(session, f"<b>INFO:</b> Mengeksekusi CLOSE posisi #{pos_id}...")
+                                    cur_price = await fetch_price(session, target_op['token_id'])
+                                    if cur_price is None:
+                                        cur_price = target_op['entry_price']
+                                        
+                                    pnl = db_close_position(pos_id, cur_price, "MANUAL_CLOSE")
+                                    await tg_close(session, target_op, cur_price, pnl, "MANUAL_CLOSE")
+                                    await pm.refresh()
+                            except (IndexError, ValueError):
+                                await tg(session, "<b>ERROR:</b> Format salah! Gunakan: <code>/close [ID]</code> (contoh: /close 83)")
+                                
                         elif text.startswith('/closeall'):
                             await tg(session, "<b>INFO:</b> Mengeksekusi CLOSE ALL posisi...")
                             ops = db_get_open_positions()
