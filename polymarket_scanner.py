@@ -118,7 +118,7 @@ CFG = {
     'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
     'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
     'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
-    'MIN_ML_CONFIDENCE'   : 60.0,      # Brain score minimum for entry
+    'MIN_ML_CONFIDENCE'   : 53.0,      # Brain score minimum for entry
 
     # Signal filters (Brain does the real filtering)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
