@@ -530,20 +530,20 @@ async def telegram_listener(session, pm):
                         text = msg.get('text', '').strip()
                         
                         # Keamanan: Hanya proses perintah jika datang dari CHAT_ID pemilik
-                        if str(chat.get('id', '')) != TELEGRAM_CHAT_ID:
+                        if str(chat.get('id', '')).strip() != TELEGRAM_CHAT_ID.strip():
                             continue
                             
-                        if text == '/posisi':
+                        if text.startswith('/posisi'):
                             ops = db_get_open_positions()
                             if not ops:
-                                await tg(session, "<b>INFO:</b> Tidak ada posisi aktif.")
+                                await tg(session, "<b>INFO:</b> Tidak ada posisi aktif saat ini.")
                                 continue
                             txt = f"<b>POSISI AKTIF ({len(ops)}/{CFG['MAX_POSITIONS']})</b>\n\n"
                             for op in ops:
-                                txt += f"#{op['id']} <b>{op['question'][:40]}...</b>\nEntry: {op['entry_price']:.4f} | Size: ${op['amount']:.2f}\n\n"
+                                txt += f"#{op['id']} <b>{op['question'][:40]}...</b>\nEntry: {op['entry_price']:.4f} | Size: ${op.get('amount_usd', 0):.2f}\n\n"
                             await tg(session, txt)
                             
-                        elif text == '/closeall':
+                        elif text.startswith('/closeall'):
                             await tg(session, "<b>INFO:</b> Mengeksekusi CLOSE ALL posisi...")
                             ops = db_get_open_positions()
                             count = 0
