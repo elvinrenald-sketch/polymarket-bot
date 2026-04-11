@@ -236,7 +236,8 @@ log.addHandler(ws_log_handler)
 
 app = FastAPI(title="Quant Terminal")
 app.add_middleware(CORSMiddleware, allow_origins=["*"])
-templates = Jinja2Templates(directory="templates")
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+templates = Jinja2Templates(directory=os.path.join(_SCRIPT_DIR, "templates"))
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -244,12 +245,51 @@ async def index(request: Request):
 
 @app.get("/api/state")
 async def get_state():
+    # Transform stats keys to match frontend expectations
+    raw_stats = WEB_STATE.stats
+    stats_out = {
+        'realized_pnl': raw_stats.get('pnl', 0) or 0,
+        'closed_trades': raw_stats.get('closed', 0) or 0,
+        'win_rate': raw_stats.get('win_rate', 0) or 0,
+        'wins': raw_stats.get('wins', 0) or 0,
+        'losses': raw_stats.get('losses', 0) or 0,
+        'exposure': raw_stats.get('exposure', 0) or 0,
+    }
+    # Transform top_scans to match frontend expectations
+    scans_out = []
+    for s in (WEB_STATE.top_scans or []):
+        scans_out.append({
+            'action': s.get('signal', 'HOLD'),
+            'question': s.get('question', ''),
+            'entry_price': s.get('entry_price', 0),
+            'brain_score': s.get('brain_score', 50),
+            'liquidity': s.get('liquidity', 0),
+            'score': s.get('score', 0),
+        })
+    # Transform positions safely (avoid non-serializable data)
+    pos_out = []
+    for p in (WEB_STATE.positions or []):
+        pos_data = p.get('pos', {})
+        pos_out.append({
+            'pos': {
+                'id': pos_data.get('id', ''),
+                'question': pos_data.get('question', ''),
+                'entry_price': pos_data.get('entry_price', 0),
+                'price_at_open': pos_data.get('entry_price', 0),
+                'token_id': pos_data.get('token_id', ''),
+                'market_id': pos_data.get('market_id', ''),
+                'shares': pos_data.get('shares', 0),
+                'amount_usd': pos_data.get('amount_usd', 0),
+            },
+            'live_price': p.get('live_price') or 0,
+            'pnl': p.get('pnl') or 0,
+        })
     return {
         "scans": WEB_STATE.scans,
         "ping_ms": WEB_STATE.ping_ms,
-        "stats": WEB_STATE.stats,
-        "positions": WEB_STATE.positions,
-        "top_scans": WEB_STATE.top_scans,
+        "stats": stats_out,
+        "positions": pos_out,
+        "top_scans": scans_out,
         "equity_curve": WEB_STATE.equity_curve
     }
 
