@@ -113,12 +113,12 @@ CFG = {
     'MAX_EXPOSURE_PCT'    : 0.50,      # Max 50% of equity exposed
 
     # Auto-Close rules — TAKE PROFIT EARLY, don't wait for resolution
-    'TAKE_PROFIT_PCT'     : 45.0,      # Close @ +45% profit (don't wait for market close!)
-    'STOP_LOSS_PCT'       : 30.0,      # Stop loss at -30%
+    'TAKE_PROFIT_PCT'     : 50.0,      # Close @ +50% profit
+    'STOP_LOSS_PCT'       : 25.0,      # Stop loss at -25%
     'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
     'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
     'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
-    'MIN_ML_CONFIDENCE'   : 40.0,      # Brain score minimum for entry
+    'MIN_ML_CONFIDENCE'   : 45.0,      # Brain score minimum for entry
 
     # Signal filters (Brain does the real filtering)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
