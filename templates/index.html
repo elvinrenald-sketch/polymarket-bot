@@ -378,9 +378,11 @@
         // ------------------
         const specCanvas = document.getElementById('spectrum-canvas');
         const specCtx = specCanvas.getContext('2d');
-        let specBars = Array(64).fill(0).map(() => ({ val: 0, target: 0 }));
+        let specBars = Array(64).fill(0).map(() => ({ val: 0, target: 0, noiseBase: 0 }));
+        let spectrumExcitePulse = 0;
 
         function resizeCanvas() {
+            if(!specCanvas.parentElement) return;
             const rect = specCanvas.parentElement.getBoundingClientRect();
             specCanvas.width = rect.width;
             specCanvas.height = rect.height;
@@ -391,20 +393,8 @@
         window.addEventListener('resize', resizeCanvas);
         
         function exciteSpectrum(scans) {
-            // Function: Represents market confidence grouped by artificial frequency bands
-            scans.forEach(scan => {
-                let score = scan.brain_score || 0;
-                let centerIdx = Math.floor(Math.random() * specBars.length);
-                let spread = 2 + Math.floor(score / 20); // Higher confidence = larger spread
-                let intensity = (score / 100);
-                
-                for(let i = -spread; i <= spread; i++) {
-                    if (centerIdx + i >= 0 && centerIdx + i < specBars.length) {
-                        let dropoff = 1 - (Math.abs(i)/spread);
-                        specBars[centerIdx + i].target += intensity * dropoff * 80;
-                    }
-                }
-            });
+            // Trigger a wave of excitement that lasts a bit longer
+            spectrumExcitePulse = 1.0;
         }
 
         function drawSpectrum() {
@@ -413,22 +403,28 @@
             specCtx.clearRect(0, 0, w, h);
             
             const barWidth = (w / specBars.length);
-            
+            spectrumExcitePulse *= 0.95; // Smoothly decay the overall excitement
+
             specBars.forEach((bar, i) => {
-                // Add random noise floor based on signal count
-                if (bar.target <= 0) {
-                    bar.target = Math.random() * (signalCount > 0 ? 10 : 2);
+                // Determine a base noise level (higher if there are active signals)
+                const baseNoiseLevel = signalCount > 0 ? (2 + Math.random() * 8) : (1 + Math.random() * 3);
+                
+                // If there's an active pulse, randomly spike some bars
+                let spike = 0;
+                if (spectrumExcitePulse > 0.1 && Math.random() > 0.8) {
+                    spike = Math.random() * 60 * spectrumExcitePulse * (avgScore > 0 ? avgScore/50 : 1);
                 }
+
+                bar.target = baseNoiseLevel + spike;
                 
-                // Spring physics
-                bar.val += (bar.target - bar.val) * 0.2;
-                bar.target *= 0.85; // Natural decay
+                // Spring physics to make the bar smoothly go up and down (60 FPS)
+                bar.val += (bar.target - bar.val) * 0.15;
                 
-                let barH = Math.min(bar.val, h - 2);
+                let barH = Math.min(Math.max(bar.val, 1), h - 2);
                 let x = i * barWidth;
                 let y = h - barH;
                 
-                // Color mapping: hot/cyan for high, grey for low
+                // Color mapping
                 let intensityP = barH / h;
                 if (intensityP > 0.6) specCtx.fillStyle = '#00ffff';
                 else if (intensityP > 0.3) specCtx.fillStyle = '#00ff88';
@@ -444,14 +440,16 @@
         // ------------------
         const driftCanvas = document.getElementById('drift-canvas');
         const driftCtx = driftCanvas.getContext('2d');
-        const driftData = Array(50).fill(0);
+        const driftData = Array(100).fill(0); // More points for smoother line
         let driftPhase = 0;
+        let currentPingFactor = 0.5;
+        let currentScoreFactor = 0.5;
 
+        // Called every 2 seconds by updateUI
         function updateDrift(score, ping) {
-            driftPhase += 0.5;
-            let val = score * Math.sin(driftPhase) + (Math.random() * (ping/100));
-            driftData.push(val);
-            driftData.shift();
+            // Set the target factors for the current 2-second window
+            currentScoreFactor = score > 0 ? score / 50 : 0.5;
+            currentPingFactor = ping > 0 ? ping / 200 : 0.5;
         }
 
         function drawDrift() {
@@ -459,12 +457,24 @@
             const h = driftCanvas.height;
             driftCtx.clearRect(0, 0, w, h);
             
+            // Advance phase continuously every frame (60 FPS)
+            driftPhase += 0.05 + (currentPingFactor * 0.05); 
+            
+            // Generate a *new* value every frame smoothly
+            let randomNoise = (Math.random() - 0.5) * currentPingFactor * 20;
+            let sineBase = Math.sin(driftPhase) * 30 * currentScoreFactor;
+            let val = sineBase + randomNoise;
+
+            driftData.push(val);
+            driftData.shift(); // keep array size constant
+            
             driftCtx.beginPath();
             const step = w / (driftData.length - 1);
             
             for(let i = 0; i < driftData.length; i++) {
-                let normVal = (driftData[i] + 100) / 200; // Normalize somewhat
-                normVal = Math.max(0.1, Math.min(0.9, normVal));
+                // Normalize the value to fit nicely in canvas height
+                let normVal = (driftData[i] + 50) / 100; 
+                normVal = Math.max(0.05, Math.min(0.95, normVal)); // clamp
                 let x = i * step;
                 let y = h - (normVal * h);
                 if (i === 0) driftCtx.moveTo(x, y);
@@ -487,8 +497,8 @@
         // Init Canvases
         setTimeout(() => {
             resizeCanvas();
-            drawSpectrum();
-            drawDrift();
+            requestAnimationFrame(drawSpectrum);
+            requestAnimationFrame(drawDrift);
         }, 500);
 
     </script>
