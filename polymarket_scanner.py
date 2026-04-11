@@ -254,6 +254,7 @@ async def get_state():
         'wins': raw_stats.get('wins', 0) or 0,
         'losses': raw_stats.get('losses', 0) or 0,
         'exposure': raw_stats.get('exposure', 0) or 0,
+        'bankroll': CFG.get('BANKROLL', 20.0),
     }
     # Transform top_scans to match frontend expectations
     scans_out = []
@@ -1561,7 +1562,22 @@ async def main():
                 log.error(f'Main loop error: {e}')
 
             try:
-                await asyncio.sleep(CFG['SCAN_INTERVAL'])
+                # Fast polling for active positions (Real-Time UI updates)
+                sleep_chunks = max(1, int(CFG['SCAN_INTERVAL'] / 1.5))
+                for _ in range(sleep_chunks):
+                    await asyncio.sleep(1.5)
+                    try:
+                        fast_poses = []
+                        for open_pos in pm.open_positions:
+                            cp = await fetch_price(session, open_pos['token_id'])
+                            pl = None
+                            if cp is not None:
+                                pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
+                            fast_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
+                        if fast_poses:
+                            WEB_STATE.positions = fast_poses
+                    except Exception:
+                        pass
             except KeyboardInterrupt:
                 break
 

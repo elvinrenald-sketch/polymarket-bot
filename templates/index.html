@@ -90,22 +90,26 @@
             <!-- Center Col: Chart & Stats -->
             <div class="col-span-6 flex flex-col space-y-2 overflow-hidden">
                 <!-- Top Stats -->
-                <div class="grid grid-cols-4 gap-2 h-20">
-                    <div class="quant-panel flex flex-col justify-center items-center">
-                        <div class="stat-label">P/L TOTAL</div>
-                        <div class="stat-value quant-text-green" id="v-pnl">+$0.00</div>
+                <div class="flex gap-4 mb-6">
+                    <div class="flex-1 quant-panel p-4 flex flex-col justify-center border-l-4 border-[#00ff88]">
+                        <div class="text-[10px] text-gray-500 mb-1 tracking-widest">TOTAL EQUITY</div>
+                        <div id="v-equity" class="stat-value text-white">$0.00</div>
                     </div>
-                    <div class="quant-panel flex flex-col justify-center items-center">
-                        <div class="stat-label">WIN RATE</div>
-                        <div class="stat-value text-[#00ffff]" id="v-winrate">0%</div>
+                    <div class="flex-1 quant-panel p-4 flex flex-col justify-center">
+                        <div class="text-[10px] text-gray-500 mb-1 tracking-widest">P/L TOTAL (REAL+FLOAT)</div>
+                        <div id="v-pnl" class="stat-value quant-text-green">+$0.00</div>
                     </div>
-                    <div class="quant-panel flex flex-col justify-center items-center">
-                        <div class="stat-label">TOTAL TRADES</div>
-                        <div class="stat-value text-white" id="v-trades">0</div>
+                    <div class="flex-1 quant-panel p-4 flex flex-col justify-center">
+                        <div class="text-[10px] text-gray-500 mb-1 tracking-widest">WIN RATE</div>
+                        <div id="v-winrate" class="stat-value text-[#00ffff]">0%</div>
                     </div>
-                    <div class="quant-panel flex flex-col justify-center items-center">
-                        <div class="stat-label">MAX EXPOSURE</div>
-                        <div class="stat-value text-orange-400">50.0%</div>
+                    <div class="flex-1 quant-panel p-4 flex flex-col justify-center">
+                        <div class="text-[10px] text-gray-500 mb-1 tracking-widest">TOTAL TRADES</div>
+                        <div id="v-trades" class="stat-value text-white">0</div>
+                    </div>
+                    <div class="flex-1 quant-panel p-4 flex flex-col justify-center">
+                        <div class="text-[10px] text-gray-500 mb-1 tracking-widest">MAX EXPOSURE</div>
+                        <div class="stat-value quant-text-red">50.0%</div>
                     </div>
                 </div>
 
@@ -274,15 +278,33 @@
                 exciteSpectrum(data.top_scans);
             }
 
-            // Portfolio stats - Set target for tweening instead of direct text
-            const pnlTotalTarget = parseFloat(data.stats.realized_pnl || 0);
-            const pnlEl = document.getElementById('v-pnl');
-            pnlEl.dataset.target = pnlTotalTarget;
-            if(!pnlEl.dataset.val) pnlEl.dataset.val = pnlTotalTarget; // init
+            // Calculate Floating PNL & Equity
+            let floatingPnl = 0;
+            data.positions.forEach(p => { floatingPnl += parseFloat(p.pnl || 0); });
             
+            const realizedPnl = typeof data.stats.realized_pnl === 'number' ? data.stats.realized_pnl : parseFloat(data.stats.realized_pnl || 0);
+            const totalPnl = realizedPnl + floatingPnl;
+            const bankroll = data.stats.bankroll || 20.0;
+            const totalEquity = bankroll + totalPnl;
+
+            // Portfolio stats - Set target for tweening instead of direct text
+            const pnlEl = document.getElementById('v-pnl');
+            pnlEl.dataset.target = totalPnl;
+            if(!pnlEl.dataset.val) pnlEl.dataset.val = totalPnl; // init
+            
+            const eqEl = document.getElementById('v-equity');
+            eqEl.dataset.target = totalEquity;
+            if(!eqEl.dataset.val) eqEl.dataset.val = bankroll;
+
             document.getElementById('v-trades').innerText = data.stats.closed_trades;
             document.getElementById('v-winrate').innerText = data.stats.win_rate.toFixed(1) + '%';
-            chart.updateSeries([{ data: data.equity_curve || [] }]);
+            
+            // Fix equity curve if it only has 1 point (ApexCharts needs >=2 points to draw a line)
+            let eqData = data.equity_curve || [];
+            if (eqData.length === 1) {
+                eqData = [eqData[0], eqData[0]];
+            }
+            chart.updateSeries([{ data: eqData }]);
 
             // Active Positions (Smart DOM Reconciliation & Number Tweening)
             const tbody = document.getElementById('active-positions');
@@ -350,7 +372,7 @@
                 fetchState();
             }
         }
-        setInterval(fetchState, 2000);
+        setInterval(fetchState, 1000);
         fetchState();
 
         // ------------------
@@ -573,6 +595,18 @@
                      pnlTotal.className = `stat-value ${cv >= 0 ? 'quant-text-green' : 'quant-text-red'}`;
                  }
             }
+            // Tween Total Equity
+            const eqEl = document.getElementById('v-equity');
+            if(eqEl && eqEl.dataset.target) {
+                 let cv = parseFloat(eqEl.dataset.val || 0);
+                 let tv = parseFloat(eqEl.dataset.target);
+                 if(Math.abs(cv - tv) > 0.005) {
+                     cv += (tv - cv) * 0.1;
+                     eqEl.dataset.val = cv;
+                     eqEl.innerText = '$' + cv.toFixed(2);
+                 }
+            }
+
             requestAnimationFrame(tweenNumbers);
         }
 
