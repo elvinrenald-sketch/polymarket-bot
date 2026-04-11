@@ -1291,6 +1291,9 @@ def display(results, stats_scan, stats_j, pm, closed_this_scan):
 # MAIN LOOP
 # ══════════════════════════════════════════════════════════════════
 async def main():
+    # Start Web UI server FIRST so Railway can detect port quickly
+    asyncio.create_task(start_web_server())
+
     # ── ONE-TIME RESET (set RESET_DATA=true in Railway env vars) ──
     if os.environ.get('RESET_DATA', '').lower() == 'true':
         log.info('🧹 RESET_DATA=true detected — wiping database & ML brain...')
@@ -1374,8 +1377,6 @@ async def main():
             await tg(session, f'<b>Polymarket Auto Bot v15.0 (Intelligence Engine)</b>\nMode: <b>{mode}</b>')
             # Start background task to listen for /posisi and /closeall commands
             asyncio.create_task(telegram_listener(session, pm))
-            
-        asyncio.create_task(start_web_server())
 
         while True:
             t0               = time.time()
