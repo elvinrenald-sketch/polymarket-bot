@@ -42,9 +42,8 @@ from pathlib import Path
 
 # --- FASTAPI WEB UI IMPORTS ---
 import uvicorn
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 # ------------------------------
 
@@ -237,11 +236,12 @@ log.addHandler(ws_log_handler)
 app = FastAPI(title="Quant Terminal")
 app.add_middleware(CORSMiddleware, allow_origins=["*"])
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-templates = Jinja2Templates(directory=os.path.join(_SCRIPT_DIR, "templates"))
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+async def index():
+    html_path = os.path.join(_SCRIPT_DIR, "templates", "index.html")
+    with open(html_path, 'r', encoding='utf-8') as f:
+        return HTMLResponse(content=f.read())
 
 @app.get("/api/state")
 async def get_state():
