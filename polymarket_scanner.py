@@ -1021,7 +1021,7 @@ class PositionManager:
 def banner():
     mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
     print('=' * 70)
-    print('  POLYMARKET AUTO BOT v14.1 (CLEAN BRAIN)')
+    print('  POLYMARKET AUTO BOT v15.0 (NEWS INTELLIGENCE)')
     print(f'  Mode: {mode} | TPM: {CFG["TIME_EXIT_MINUTES"]}m | FEM: {CFG["FORCE_EXIT_MINUTES"]}m')
     print('=' * 70)
 
