@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy bot scripts
-COPY polymarket_scanner.py intelligence.py ./
+COPY polymarket_scanner.py intelligence.py news_intel.py ./
 
 # Create persistent data directory
 # This path will be mounted to a Railway Volume
