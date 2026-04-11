@@ -274,31 +274,57 @@
                 exciteSpectrum(data.top_scans);
             }
 
-            // Portfolio stats
-            const pnlStr = (data.stats.realized_pnl >= 0 ? '+' : '') + '$' + data.stats.realized_pnl.toFixed(2);
+            // Portfolio stats - Set target for tweening instead of direct text
+            const pnlTotalTarget = parseFloat(data.stats.realized_pnl || 0);
             const pnlEl = document.getElementById('v-pnl');
-            pnlEl.innerText = pnlStr;
-            pnlEl.className = 'stat-value ' + (data.stats.realized_pnl >= 0 ? 'quant-text-green' : 'quant-text-red');
+            pnlEl.dataset.target = pnlTotalTarget;
+            if(!pnlEl.dataset.val) pnlEl.dataset.val = pnlTotalTarget; // init
+            
             document.getElementById('v-trades').innerText = data.stats.closed_trades;
             document.getElementById('v-winrate').innerText = data.stats.win_rate.toFixed(1) + '%';
             chart.updateSeries([{ data: data.equity_curve || [] }]);
 
-            // Active Positions
-            const posHTML = data.positions.map(p => {
+            // Active Positions (Smart DOM Reconciliation & Number Tweening)
+            const tbody = document.getElementById('active-positions');
+            
+            // 1. Remove rows for positions that are closed
+            Array.from(tbody.children).forEach(tr => {
+                const stillExists = data.positions.some(p => p.pos.market_id === tr.dataset.id);
+                if(!stillExists) tr.remove();
+            });
+
+            // 2. Add or update active rows
+            data.positions.forEach(p => {
+                const id = p.pos.market_id;
+                let tr = tbody.querySelector(`tr[data-id="${id}"]`);
+                
                 const isBuy = p.pos.token_id === p.pos.market_id + '_yes';
-                const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
+                const currentPrice = parseFloat(p.live_price || 0);
                 const pnl = parseFloat(p.pnl || 0);
-                const pnlClass = pnl >= 0 ? 'text-[#00ff88]' : 'text-[#ff3333]';
-                return `
-                <tr class="border-b border-[#0a150a] hover:bg-[#112211]">
-                    <td class="${actionClass} font-bold py-2">${isBuy ? 'BUY' : 'SELL'}</td>
-                    <td class="truncate max-w-[200px]" title="${p.pos.question}">${p.pos.question}</td>
-                    <td class="text-right">$${parseFloat(p.pos.price_at_open).toFixed(2)}</td>
-                    <td class="text-right text-white">$${(p.live_price || 0).toFixed(2)}</td>
-                    <td class="text-right ${pnlClass} font-bold">${pnl >= 0 ? '+'+pnl.toFixed(2) : pnl.toFixed(2)}$</td>
-                </tr>`;
-            }).join('');
-            document.getElementById('active-positions').innerHTML = posHTML;
+                
+                if (!tr) {
+                    // Create new row if it doesn't exist yet
+                    tr = document.createElement('tr');
+                    tr.dataset.id = id;
+                    tr.className = "border-b border-[#0a150a] hover:bg-[#112211] transition-colors";
+                    
+                    const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
+                    tr.innerHTML = `
+                        <td class="${actionClass} font-bold py-2 bg-[#050505]">${isBuy ? 'BUY' : 'SELL'}</td>
+                        <td class="truncate max-w-[200px]" title="${p.pos.question}">${p.pos.question}</td>
+                        <td class="text-right text-gray-400">$${parseFloat(p.pos.price_at_open).toFixed(3)}</td>
+                        <td class="text-right text-white font-mono current-price" data-val="${currentPrice}">$${currentPrice.toFixed(3)}</td>
+                        <td class="text-right font-bold font-mono current-pnl" data-val="${pnl}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}$</td>
+                    `;
+                    tbody.appendChild(tr);
+                }
+                
+                // We set the TARGET value directly so the animation loop can smoothly roll the numbers
+                const priceCell = tr.querySelector('.current-price');
+                const pnlCell = tr.querySelector('.current-pnl');
+                priceCell.dataset.target = currentPrice;
+                pnlCell.dataset.target = pnl;
+            });
             
             // Drift metric
             document.getElementById('spec-status').innerText = `SIG: ${(signalCount + Math.random()).toFixed(1)} Hz`;
@@ -494,11 +520,56 @@
             requestAnimationFrame(drawDrift);
         }
 
-        // Init Canvases
+        // ------------------
+        // NUMBER TWEENING (60 FPS)
+        // ------------------
+        function tweenNumbers() {
+            // Tween table cells: Current Price
+            document.querySelectorAll('.current-price').forEach(el => {
+                if(el.dataset.target) {
+                    let cv = parseFloat(el.dataset.val);
+                    let tv = parseFloat(el.dataset.target);
+                    if(Math.abs(cv - tv) > 0.0005) {
+                        cv += (tv - cv) * 0.1; // Smooth interpolate
+                        el.dataset.val = cv;
+                        el.innerText = '$' + cv.toFixed(3);
+                    }
+                }
+            });
+            // Tween table cells: PNL
+            document.querySelectorAll('.current-pnl').forEach(el => {
+                if(el.dataset.target) {
+                    let cv = parseFloat(el.dataset.val);
+                    let tv = parseFloat(el.dataset.target);
+                    if(Math.abs(cv - tv) > 0.005) {
+                        cv += (tv - cv) * 0.1;
+                        el.dataset.val = cv;
+                        el.innerText = (cv >= 0 ? '+' : '') + cv.toFixed(2) + '$';
+                        el.className = `text-right font-bold font-mono current-pnl ${cv >= 0 ? 'text-[#00ff88]' : 'text-[#ff3333]'}`;
+                    }
+                }
+            });
+            // Total PnL Tween
+            const pnlTotal = document.getElementById('v-pnl');
+            if(pnlTotal.dataset.target) {
+                 let cv = parseFloat(pnlTotal.dataset.val || 0);
+                 let tv = parseFloat(pnlTotal.dataset.target);
+                 if(Math.abs(cv - tv) > 0.005) {
+                     cv += (tv - cv) * 0.1;
+                     pnlTotal.dataset.val = cv;
+                     pnlTotal.innerText = (cv >= 0 ? '+' : '') + '$' + cv.toFixed(2);
+                     pnlTotal.className = `stat-value ${cv >= 0 ? 'quant-text-green' : 'quant-text-red'}`;
+                 }
+            }
+            requestAnimationFrame(tweenNumbers);
+        }
+
+        // Init Canvases & Animation Loops
         setTimeout(() => {
             resizeCanvas();
             requestAnimationFrame(drawSpectrum);
             requestAnimationFrame(drawDrift);
+            requestAnimationFrame(tweenNumbers);
         }, 500);
 
     </script>
