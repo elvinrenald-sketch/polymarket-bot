@@ -118,7 +118,7 @@ CFG = {
     'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
     'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
     'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
-    'MIN_ML_CONFIDENCE'   : 51.0,      # Brain score minimum for entry
+    'MIN_ML_CONFIDENCE'   : 60.0,      # Brain score minimum for entry
 
     # Signal filters (Brain does the real filtering)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
@@ -510,6 +510,57 @@ async def tg_close(session, pos: dict, exit_price: float, pnl: float, reason: st
         f"P&L    : <b>${pnl:+.4f}</b>\n"
     )
     await tg(session, text)
+
+async def telegram_listener(session, pm):
+    """Long-polls Telegram for commands like /posisi and /closeall."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    offset = 0
+    while True:
+        try:
+            url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates'
+            params = {'timeout': 20, 'offset': offset}
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=25)) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for item in data.get('result', []):
+                        offset = item['update_id'] + 1
+                        msg = item.get('message', {})
+                        chat = msg.get('chat', {})
+                        text = msg.get('text', '').strip()
+                        
+                        # Keamanan: Hanya proses perintah jika datang dari CHAT_ID pemilik
+                        if str(chat.get('id', '')) != TELEGRAM_CHAT_ID:
+                            continue
+                            
+                        if text == '/posisi':
+                            ops = db_get_open_positions()
+                            if not ops:
+                                await tg(session, "<b>INFO:</b> Tidak ada posisi aktif.")
+                                continue
+                            txt = f"<b>POSISI AKTIF ({len(ops)}/{CFG['MAX_POSITIONS']})</b>\n\n"
+                            for op in ops:
+                                txt += f"#{op['id']} <b>{op['question'][:40]}...</b>\nEntry: {op['entry_price']:.4f} | Size: ${op['amount']:.2f}\n\n"
+                            await tg(session, txt)
+                            
+                        elif text == '/closeall':
+                            await tg(session, "<b>INFO:</b> Mengeksekusi CLOSE ALL posisi...")
+                            ops = db_get_open_positions()
+                            count = 0
+                            for op in ops:
+                                # For manual close in paper trading, flat exit to prevent bad PNL
+                                pnl = db_close_position(op['id'], op['entry_price'], "MANUAL_CLOSEALL")
+                                await tg_close(session, op, op['entry_price'], pnl, "MANUAL_CLOSEALL")
+                                count += 1
+                            if count > 0:
+                                await pm.refresh()
+                                await tg(session, f"<b>INFO:</b> {count} Posisi ditutup paksa.")
+                            else:
+                                await tg(session, "<b>INFO:</b> Tidak ada posisi aktif.")
+        except Exception as e:
+            log.debug(f'Telegram listener error: {e}')
+        
+        await asyncio.sleep(2)
 
 # ══════════════════════════════════════════════════════════════════
 # API
@@ -1175,7 +1226,9 @@ async def main():
     async with aiohttp.ClientSession(connector=connector, headers=hdrs) as session:
         if TELEGRAM_TOKEN:
             mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
-            await tg(session, f'<b>Polymarket Auto Bot v12.0 (Intelligence Engine)</b>\nMode: <b>{mode}</b>')
+            await tg(session, f'<b>Polymarket Auto Bot v15.0 (Intelligence Engine)</b>\nMode: <b>{mode}</b>')
+            # Start background task to listen for /posisi and /closeall commands
+            asyncio.create_task(telegram_listener(session, pm))
 
         while True:
             t0               = time.time()
