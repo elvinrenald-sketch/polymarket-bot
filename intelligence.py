@@ -39,6 +39,15 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Tuple, Any
 
+# ── News Intelligence import ────────────────────────────────────
+try:
+    from news_intel import NewsIntelligence
+    HAS_NEWS = True
+except Exception as _e:
+    HAS_NEWS = False
+    NewsIntelligence = None
+    logging.getLogger('poly.brain').warning(f"[NEWS] news_intel import failed: {_e}")
+
 # ── Optional ML imports ─────────────────────────────────────────
 try:
     import numpy as np
@@ -126,6 +135,7 @@ FEATURE_NAMES = [
     'external_divergence',
     'whale_score',
     'toxicity_score',
+    'news_sentiment',
 ]
 
 
@@ -695,7 +705,8 @@ class FeatureEngineer:
                 spread_pct: float, momentum_pct: float,
                 days_left: Optional[float], category: str,
                 is_arb: bool, whale: Dict,
-                divergence: float, toxicity: float) -> Dict[str, float]:
+                divergence: float, toxicity: float,
+                news_sentiment: float = 0.0) -> Dict[str, float]:
         """Extract normalized features for ML model."""
 
         liq_log = math.log10(max(liquidity, 1))
@@ -723,6 +734,7 @@ class FeatureEngineer:
             'external_divergence': round(abs(divergence), 4),
             'whale_score': round(whale.get('whale_score', 0), 1),
             'toxicity_score': round(toxicity, 1),
+            'news_sentiment': round(news_sentiment, 4),
         }
 
 
@@ -898,8 +910,16 @@ class TradingBrain:
         self.spread_analyzer = SpreadAnalyzer()
         self.whale_detector = WhaleDetector()
         self.feature_engineer = FeatureEngineer()
-        log.info("[BRAIN] v4.0 initialized | "
-                 f"ML model: {'LOADED' if self.model_mgr.is_trained else 'LEARNING'}")
+        # News Intelligence Engine
+        self.news_intel = None
+        if HAS_NEWS and NewsIntelligence:
+            try:
+                self.news_intel = NewsIntelligence()
+            except Exception as e:
+                log.warning(f"[BRAIN] NewsIntelligence init failed: {e}")
+        log.info("[BRAIN] v5.0 initialized | "
+                 f"ML model: {'LOADED' if self.model_mgr.is_trained else 'LEARNING'} | "
+                 f"News: {'ACTIVE' if self.news_intel else 'DISABLED'}")
 
     # ── HEURISTIC SCORE ──────────────────────────────────────────
     def _heuristic_score(self, signal_data: dict) -> float:
@@ -1011,6 +1031,19 @@ class TradingBrain:
         # ─── Step 2: Whale detection ─────────────────────────
         whale = self.whale_detector.analyze(volume_24h, liquidity, momentum)
 
+        # ─── Step 2.5: NEWS INTELLIGENCE ─────────────────────
+        news_data = {'news_sentiment': 0.0, 'news_count': 0,
+                     'news_confidence': 0.0, 'has_news': False,
+                     'reasoning': 'News disabled', 'top_headlines': []}
+        if self.news_intel:
+            try:
+                news_data = await self.news_intel.analyze_for_question(
+                    session, question, category)
+            except Exception as e:
+                log.debug(f"[BRAIN] News analysis error: {e}")
+
+        news_sentiment = news_data.get('news_sentiment', 0.0)
+
         # ─── Step 3: Spread analysis ─────────────────────────
         spread = self.spread_analyzer.analyze(entry_price, spread_pct, days_left)
 
@@ -1019,7 +1052,8 @@ class TradingBrain:
             entry_price, liquidity, volume_24h, spread_pct,
             momentum, days_left, category, is_arb,
             whale, prob.get('divergence', 0),
-            spread.get('toxicity_score', 0))
+            spread.get('toxicity_score', 0),
+            news_sentiment)
 
         # ─── Step 5: ML prediction (if model exists) ─────────
         ml_pred = self.model_mgr.predict(features)
@@ -1028,21 +1062,26 @@ class TradingBrain:
         # ─── Step 6: Combined brain_score ─────────────────────
         heuristic = self._heuristic_score(signal_data)
 
+        # News boost/penalty: convert sentiment (-1..+1) to score boost (-15..+15)
+        news_boost = news_sentiment * 15 if news_data.get('has_news') else 0
+
         if has_ml:
-            # ML model trained → weight: 40% ML, 30% heuristic, 30% external
+            # ML model trained → weight: 35% ML, 25% heuristic, 25% external, 15% news
             ext_boost = min(20, abs(prob.get('divergence', 0)) * 100)
             brain_score = (
-                ml_pred * 100 * 0.40 +
-                heuristic * 0.30 +
-                ext_boost * 0.30 +
+                ml_pred * 100 * 0.35 +
+                heuristic * 0.25 +
+                ext_boost * 0.25 +
+                news_boost * 0.15 +
                 (10 if prob.get('has_external_data') else 0)
             )
         else:
-            # No ML model → weight: 60% heuristic, 40% external
+            # No ML model → weight: 50% heuristic, 30% external, 20% news
             ext_boost = min(25, abs(prob.get('divergence', 0)) * 100)
             brain_score = (
-                heuristic * 0.60 +
-                ext_boost * 0.40 +
+                heuristic * 0.50 +
+                ext_boost * 0.30 +
+                news_boost * 0.20 +
                 (10 if prob.get('has_external_data') else 0)
             )
 
@@ -1088,6 +1127,7 @@ class TradingBrain:
             'probability': prob,
             'whale': whale,
             'spread_analysis': spread,
+            'news': news_data,
             'features': features,
             'gates': all_gates,
             'gates_passed': f'{passed}/{total}',

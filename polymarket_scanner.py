@@ -462,6 +462,18 @@ async def tg(session, text: str):
 
 async def tg_open(session, r: dict, pos_id: int, amount: float):
     mode = 'REAL TRADE' if AUTO_TRADE and PRIVATE_KEY else 'PAPER TRADE'
+    # Add news info if available
+    news_info = ''
+    brain_analysis = r.get('brain_analysis', {})
+    news = brain_analysis.get('news', {})
+    if news.get('has_news'):
+        headlines = news.get('top_headlines', [])
+        news_info = (
+            f"\n📰 News  : {news.get('reasoning', '')}\n"
+        )
+        if headlines:
+            news_info += f"  → {headlines[0][:70]}\n"
+
     text = (
         f"<b>OPEN POSISI #{pos_id}</b>\n"
         f"{'='*24}\n"
@@ -474,6 +486,7 @@ async def tg_open(session, r: dict, pos_id: int, amount: float):
         f"Liq     : {fu(r.get('liquidity', 0))}\n"
         f"Momentum: {r.get('momentum_pct', 0):+.1f}%\n"
         f"Mode    : {mode}\n"
+        f"{news_info}"
         f"TP: +{CFG['TAKE_PROFIT_PCT']:.0f}% | "
         f"SL: -{CFG['STOP_LOSS_PCT']:.0f}% | "
         f"TimeExit: <{CFG['TIME_EXIT_MINUTES']}m | "
@@ -1120,6 +1133,14 @@ async def main():
         closed_count = 0
         total_pnl = 0
 
+    # Download NLTK data for VADER sentiment
+    try:
+        import nltk
+        nltk.download('vader_lexicon', quiet=True)
+        log.info('[STARTUP] VADER lexicon ready')
+    except Exception:
+        log.info('[STARTUP] VADER lexicon download skipped (nltk not installed)')
+
     # Initialize Brain
     brain = None
     if TradingBrain:
@@ -1127,17 +1148,18 @@ async def main():
 
     banner()
     log.info('=' * 60)
-    log.info('  POLYMARKET AUTO BOT v14.1 (CLEAN BRAIN)')
+    log.info('  POLYMARKET AUTO BOT v15.0 (NEWS INTELLIGENCE)')
     log.info('=' * 60)
     log.info(f'  Storage : {storage_type}')
     log.info(f'  Journal : {JOURNAL_DIR}')
     log.info(f'  Database: {DB_PATH}')
     log.info(f'  History : {closed_count} closed trades | P&L: ${total_pnl:+.2f}')
     log.info(f'  Brain   : {"LOADED (ML active)" if brain and brain.model_mgr.is_trained else "HEURISTIC (learning)"}')
+    log.info(f'  News    : {"ACTIVE (CryptoPanic + RSS + VADER)" if brain and brain.news_intel else "DISABLED"}')
     log.info(f'  ML needs: {max(0, 20 - closed_count)} more trades to activate')
     log.info(f'  Config  : TP={CFG["TAKE_PROFIT_PCT"]}% SL={CFG["STOP_LOSS_PCT"]}% | Tiered Sizing')
-    log.info(f'  Entry   : Price range 0.05-0.95 | Spread ≤8% | Liq ≥$1K')
-    log.info(f'  Safety  : Circuit Breaker (3 loss → 1h pause) | Blacklist active')
+    log.info(f'  Entry   : Price ≤$0.80 | Spread ≤8% | Liq ≥$2K')
+    log.info(f'  Safety  : Circuit Breaker (3 loss → 15m pause) | Blacklist active')
     log.info('=' * 60)
 
     history       : Dict[str, list] = {}
