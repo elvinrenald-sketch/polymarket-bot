@@ -75,132 +75,154 @@
     </header>
 
     <!-- Main Content -->
-    <main class="flex-1 grid grid-cols-12 gap-2 overflow-hidden">
+    <main class="flex-1 flex flex-col gap-2 overflow-hidden">
         
-        <!-- Left Col: Live Trades / Scans -->
-        <div class="col-span-3 quant-panel flex flex-col p-3 overflow-hidden">
-            <h2 class="text-xs mb-3 text-gray-500 tracking-widest border-b border-[#1a331a] pb-1">LIVE TRADES SCANNER</h2>
-            <div id="live-trades" class="flex-1 overflow-y-auto terminal-scroll space-y-2 text-xs">
-                <!-- Data injected by JS -->
+        <!-- Top Region -->
+        <div class="grid grid-cols-12 gap-2 flex-1 overflow-hidden">
+            <!-- Left Col: Live Trades / Scans -->
+            <div class="col-span-3 quant-panel flex flex-col p-3 overflow-hidden">
+                <h2 class="text-xs mb-3 text-gray-500 tracking-widest border-b border-[#1a331a] pb-1">LIVE TRADES SCANNER</h2>
+                <div id="live-trades" class="flex-1 overflow-y-auto terminal-scroll space-y-2 text-xs">
+                    <!-- Data injected by JS -->
+                </div>
+            </div>
+
+            <!-- Center Col: Chart & Stats -->
+            <div class="col-span-6 flex flex-col space-y-2 overflow-hidden">
+                <!-- Top Stats -->
+                <div class="grid grid-cols-4 gap-2 h-20">
+                    <div class="quant-panel flex flex-col justify-center items-center">
+                        <div class="stat-label">P/L TOTAL</div>
+                        <div class="stat-value quant-text-green" id="v-pnl">+$0.00</div>
+                    </div>
+                    <div class="quant-panel flex flex-col justify-center items-center">
+                        <div class="stat-label">WIN RATE</div>
+                        <div class="stat-value text-[#00ffff]" id="v-winrate">0%</div>
+                    </div>
+                    <div class="quant-panel flex flex-col justify-center items-center">
+                        <div class="stat-label">TOTAL TRADES</div>
+                        <div class="stat-value text-white" id="v-trades">0</div>
+                    </div>
+                    <div class="quant-panel flex flex-col justify-center items-center">
+                        <div class="stat-label">MAX EXPOSURE</div>
+                        <div class="stat-value text-orange-400">50.0%</div>
+                    </div>
+                </div>
+
+                <!-- Chart -->
+                <div class="quant-panel flex-1 p-2 relative">
+                    <span class="absolute top-2 left-2 text-[10px] text-gray-600 tracking-widest z-10">EQUITY CURVE (REALIZED PNL)</span>
+                    <div id="chart" class="w-full h-full"></div>
+                </div>
+                
+                <!-- Bottom: Active Positions -->
+                <div class="quant-panel h-32 flex flex-col p-2">
+                    <h2 class="text-[10px] mb-2 text-gray-500 tracking-widest">ACTIVE POSITIONS (REAL-TIME)</h2>
+                    <div class="overflow-y-auto terminal-scroll flex-1">
+                        <table class="w-full text-xs text-left">
+                            <thead class="text-gray-600 border-b border-[#1a331a]">
+                                <tr>
+                                    <th class="pb-1">ACTION</th>
+                                    <th class="pb-1">MARKET</th>
+                                    <th class="pb-1 text-right">ENTRY</th>
+                                    <th class="pb-1 text-right">CURRENT</th>
+                                    <th class="pb-1 text-right">P/L</th>
+                                </tr>
+                            </thead>
+                            <tbody id="active-positions" class="text-gray-300">
+                                <!-- Injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Col: Singularity & Console -->
+            <div class="col-span-3 flex flex-col space-y-2 overflow-hidden">
+                <!-- Singularity / Gravity Well -->
+                <div class="quant-panel h-48 flex flex-col relative overflow-hidden group">
+                    <div class="flex justify-between w-full p-2 border-b border-[#1a331a] z-10 bg-[#050505]/50">
+                        <h2 class="text-[10px] text-gray-500 tracking-widest">SINGULARITY</h2>
+                        <span class="text-[10px] text-green-700 tracking-widest" id="v-flow-rate">FLOW: NORMAL</span>
+                    </div>
+                    <div class="flex-1 flex items-center justify-center overflow-hidden">
+                        <!-- Better sizing and contrast for the 3D ASCII Torus -->
+                        <pre id="singularity-donut" class="text-[6px] text-[#00ff88] leading-[6px] font-mono font-bold opacity-90 drop-shadow-[0_0_5px_rgba(0,255,136,0.5)]"></pre>
+                    </div>
+                </div>
+
+                <!-- Runtime Matrix Console -->
+                <div class="quant-panel flex-1 flex flex-col p-3 overflow-hidden">
+                    <div class="flex justify-between w-full mb-3 border-b border-[#1a331a] pb-1">
+                        <h2 class="text-xs text-gray-500 tracking-widest">RUNTIME CONSOLE</h2>
+                        <span class="text-[10px] text-green-700 tracking-widest">LIVE LOG</span>
+                    </div>
+                    <div id="console" class="flex-1 overflow-y-auto terminal-scroll text-[11px] leading-tight text-gray-400 break-words whitespace-pre-wrap font-mono relative">
+                        <!-- Logs injected via websockets -->
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- Center Col: Chart & Stats -->
-        <div class="col-span-6 flex flex-col space-y-2 overflow-hidden">
-            <!-- Top Stats -->
-            <div class="grid grid-cols-4 gap-2 h-24">
-                <div class="quant-panel flex flex-col justify-center items-center">
-                    <div class="stat-label">P/L TOTAL</div>
-                    <div class="stat-value quant-text-green" id="v-pnl">+$0.00</div>
+        <!-- Bottom Row: Spectral Visualizers -->
+        <div class="h-32 grid grid-cols-12 gap-2 flex-shrink-0">
+            <!-- Frequency Spectrum -->
+            <div class="col-span-8 quant-panel relative overflow-hidden flex items-end pt-6">
+                <!-- Overlay Header -->
+                <div class="absolute top-0 left-0 w-full p-2 flex justify-between z-10 border-b border-[#1a331a] bg-[#050505]/80 pointer-events-none">
+                    <span class="text-[10px] text-gray-500 tracking-widest">FREQUENCY SPECTRUM <span class="ml-2 text-gray-700">| CONFIDENCE SCORING</span></span>
+                    <span class="text-[9px] text-[#00ffff] tracking-widest" id="spec-status">SIG: 0 Hz</span>
                 </div>
-                <div class="quant-panel flex flex-col justify-center items-center">
-                    <div class="stat-label">WIN RATE</div>
-                    <div class="stat-value text-[#00ffff]" id="v-winrate">0%</div>
-                </div>
-                <div class="quant-panel flex flex-col justify-center items-center">
-                    <div class="stat-label">TOTAL TRADES</div>
-                    <div class="stat-value text-white" id="v-trades">0</div>
-                </div>
-                <div class="quant-panel flex flex-col justify-center items-center">
-                    <div class="stat-label">MAX EXPOSURE</div>
-                    <div class="stat-value text-orange-400">50.0%</div>
-                </div>
-            </div>
-
-            <!-- Chart -->
-            <div class="quant-panel flex-1 p-2 relative">
-                <span class="absolute top-2 left-2 text-[10px] text-gray-600 tracking-widest z-10">EQUITY CURVE (REALIZED PNL)</span>
-                <div id="chart" class="w-full h-full"></div>
+                <!-- Canvas -->
+                <canvas id="spectrum-canvas" class="w-full h-full"></canvas>
             </div>
             
-            <!-- Bottom: Active Positions -->
-            <div class="quant-panel h-1/3 flex flex-col p-2">
-                <h2 class="text-[10px] mb-2 text-gray-500 tracking-widest">ACTIVE POSITIONS (REAL-TIME)</h2>
-                <div class="overflow-y-auto terminal-scroll flex-1">
-                    <table class="w-full text-xs text-left">
-                        <thead class="text-gray-600 border-b border-[#1a331a]">
-                            <tr>
-                                <th class="pb-1">ACTION</th>
-                                <th class="pb-1">MARKET</th>
-                                <th class="pb-1 text-right">ENTRY</th>
-                                <th class="pb-1 text-right">CURRENT</th>
-                                <th class="pb-1 text-right">P/L</th>
-                            </tr>
-                        </thead>
-                        <tbody id="active-positions" class="text-gray-300">
-                            <!-- Injected by JS -->
-                        </tbody>
-                    </table>
+            <!-- Price Action / Kelly Surface -->
+            <div class="col-span-4 quant-panel relative overflow-hidden flex items-end pt-6">
+                <div class="absolute top-0 left-0 w-full p-2 flex justify-between z-10 border-b border-[#1a331a] bg-[#050505]/80 pointer-events-none">
+                    <span class="text-[10px] text-gray-500 tracking-widest">DRIFT SURFACE</span>
+                    <span class="text-[9px] text-orange-400 tracking-widest">VOLATILITY</span>
                 </div>
-            </div>
-        </div>
-
-        <!-- Right Col: Singularity & Console -->
-        <div class="col-span-3 flex flex-col space-y-2 overflow-hidden">
-            <!-- Singularity / Gravity Well -->
-            <div class="quant-panel h-48 flex flex-col relative overflow-hidden">
-                <div class="flex justify-between w-full p-2 border-b border-[#1a331a]">
-                    <h2 class="text-[10px] text-gray-500 tracking-widest">SINGULARITY</h2>
-                    <span class="text-[10px] text-green-700 tracking-widest">GRAVITY WELL</span>
-                </div>
-                <div class="flex-1 flex items-center justify-center overflow-hidden">
-                    <pre id="singularity-donut" class="text-[5px] text-white leading-[5px] font-mono opacity-80 pointer-events-none transform scale-95"></pre>
-                </div>
-            </div>
-
-            <!-- Runtime Matrix Console -->
-            <div class="quant-panel flex-1 flex flex-col p-3 overflow-hidden">
-                <div class="flex justify-between w-full mb-3 border-b border-[#1a331a] pb-1">
-                    <h2 class="text-xs text-gray-500 tracking-widest">RUNTIME CONSOLE</h2>
-                    <span class="text-[10px] text-green-700 tracking-widest">LIVE LOG</span>
-                </div>
-                <div id="console" class="flex-1 overflow-y-auto terminal-scroll text-[11px] leading-tight text-gray-400 break-words whitespace-pre-wrap font-mono relative">
-                    <!-- Logs injected via websockets -->
-                </div>
+                <canvas id="drift-canvas" class="w-full h-full"></canvas>
             </div>
         </div>
     </main>
 
     <script>
-        // Chart setup
+        // Common variables
+        let lastPing = 0;
+        let signalCount = 0;
+        let avgScore = 0;
+        
+        let singularitySpeed = 0.05;
+        let targetSingularitySpeed = 0.05;
+        
+        // ------------------
+        // EQUITY CHART
+        // ------------------
         var options = {
-            series: [{
-                name: 'PnL',
-                data: []
-            }],
+            series: [{ name: 'PnL', data: [] }],
             chart: {
-                type: 'area',
-                height: '100%',
+                type: 'area', height: '100%',
                 animations: { enabled: true, easing: 'linear', dynamicAnimation: { speed: 1000 } },
-                toolbar: { show: false },
-                zoom: { enabled: false },
-                background: 'transparent',
-                foreColor: '#444'
+                toolbar: { show: false }, zoom: { enabled: false },
+                background: 'transparent', foreColor: '#444'
             },
-            colors: ['#00ff00'],
-            fill: {
-                type: 'gradient',
-                gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.0, stops: [0, 100] }
-            },
+            colors: ['#00ff88'],
+            fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.0, stops: [0, 100] } },
             dataLabels: { enabled: false },
             stroke: { curve: 'smooth', width: 2 },
-            xaxis: {
-                type: 'numeric',
-                labels: { show: false },
-                axisBorder: { show: false },
-                axisTicks: { show: false }
-            },
-            yaxis: {
-                labels: { formatter: (val) => '$' + val.toFixed(2), style: { colors: '#666' } }
-            },
+            xaxis: { type: 'numeric', labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
+            yaxis: { labels: { formatter: (val) => '$' + val.toFixed(2), style: { colors: '#666' } } },
             grid: { borderColor: '#1a331a', strokeDashArray: 2, xaxis: { lines: { show: true } }, yaxis: { lines: { show: true } } },
             theme: { mode: 'dark' }
         };
-
         var chart = new ApexCharts(document.querySelector("#chart"), options);
         chart.render();
 
-        // Data Polling
+        // ------------------
+        // POLLING & UI UPDATE
+        // ------------------
         async function fetchState() {
             try {
                 const res = await fetch('/api/state');
@@ -212,49 +234,64 @@
         }
 
         function updateUI(data) {
-            // Header
+            // Header stats
             document.getElementById('v-scans').innerText = data.scans;
             document.getElementById('v-ping').innerText = data.ping_ms + 'ms';
             document.getElementById('v-open-count').innerText = data.positions.length;
             
-            // Stats
+            // Core logic updates
+            lastPing = data.ping_ms;
+            signalCount = data.top_scans.length;
+            
+            let totalScore = 0;
+            const topHTML = data.top_scans.map(s => {
+                const isBuy = s.action === 'BUY';
+                const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
+                const score = s.brain_score || 0;
+                totalScore += score;
+                const scoreStr = `<span class="text-[#00ffff]">SC:${score.toFixed(1)}</span>`;
+                return `
+                <div class="flex justify-between items-center py-1 border-b border-[#0f1f0f] hover:bg-[#1a331a] transition-colors">
+                    <span class="${actionClass} font-bold w-12 text-[10px] bg-[#050505] px-1 text-center rounded">${s.action}</span>
+                    <span class="text-gray-300 truncate flex-1 mx-2 text-[11px]" title="${s.question}">${s.question}</span>
+                    <span class="text-white w-10 text-right">${s.entry_price.toFixed(2)}$</span>
+                    <span class="text-right w-16 text-[10px]">${scoreStr}</span>
+                </div>`;
+            }).join('');
+            document.getElementById('live-trades').innerHTML = topHTML;
+            avgScore = signalCount > 0 ? (totalScore / signalCount) : 0;
+
+            // 2. Map Volume/Signals to Singularity Speed
+            targetSingularitySpeed = 0.02 + (signalCount * 0.015);
+            let flowText = "IDLE";
+            if(signalCount > 5) flowText = "HIGH";
+            else if(signalCount > 2) flowText = "NORMAL";
+            else if(signalCount > 0) flowText = "LOW";
+            document.getElementById('v-flow-rate').innerText = "FLOW: " + flowText;
+
+            // Signal excitation for Frequency Spectrum
+            if (data.top_scans && data.top_scans.length > 0) {
+                exciteSpectrum(data.top_scans);
+            }
+
+            // Portfolio stats
             const pnlStr = (data.stats.realized_pnl >= 0 ? '+' : '') + '$' + data.stats.realized_pnl.toFixed(2);
             const pnlEl = document.getElementById('v-pnl');
             pnlEl.innerText = pnlStr;
             pnlEl.className = 'stat-value ' + (data.stats.realized_pnl >= 0 ? 'quant-text-green' : 'quant-text-red');
             document.getElementById('v-trades').innerText = data.stats.closed_trades;
             document.getElementById('v-winrate').innerText = data.stats.win_rate.toFixed(1) + '%';
-
-            // Chart update
-            chart.updateSeries([{
-                data: data.equity_curve || []
-            }]);
-
-            // Live Trades
-            const topHTML = data.top_scans.map(s => {
-                const isBuy = s.action === 'BUY';
-                const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
-                const scoreStr = s.brain_score !== undefined ? `<span class="text-blue-400">SC:${s.brain_score.toFixed(1)}</span>` : '';
-                return `
-                <div class="flex justify-between items-center py-1">
-                    <span class="${actionClass} font-bold w-10">${s.action}</span>
-                    <span class="text-gray-300 truncate flex-1 mx-2" title="${s.question}">${s.question.substring(0,25)}</span>
-                    <span class="text-white w-8 text-right">${s.entry_price.toFixed(2)}$</span>
-                    <span class="text-right w-16">${scoreStr}</span>
-                </div>`;
-            }).join('');
-            document.getElementById('live-trades').innerHTML = topHTML;
+            chart.updateSeries([{ data: data.equity_curve || [] }]);
 
             // Active Positions
             const posHTML = data.positions.map(p => {
-                const isBuy = p.pos.token_id === p.pos.market_id + '_yes'; // approximation
-                const actionStr = isBuy ? 'BUY' : 'SELL';
+                const isBuy = p.pos.token_id === p.pos.market_id + '_yes';
                 const actionClass = isBuy ? 'quant-text-green' : 'quant-text-red';
                 const pnl = parseFloat(p.pnl || 0);
-                const pnlClass = pnl >= 0 ? 'quant-text-green' : 'quant-text-red';
+                const pnlClass = pnl >= 0 ? 'text-[#00ff88]' : 'text-[#ff3333]';
                 return `
-                <tr class="border-b border-[#0a150a]">
-                    <td class="${actionClass} font-bold py-2">${actionStr}</td>
+                <tr class="border-b border-[#0a150a] hover:bg-[#112211]">
+                    <td class="${actionClass} font-bold py-2">${isBuy ? 'BUY' : 'SELL'}</td>
                     <td class="truncate max-w-[200px]" title="${p.pos.question}">${p.pos.question}</td>
                     <td class="text-right">$${parseFloat(p.pos.price_at_open).toFixed(2)}</td>
                     <td class="text-right text-white">$${(p.live_price || 0).toFixed(2)}</td>
@@ -262,6 +299,10 @@
                 </tr>`;
             }).join('');
             document.getElementById('active-positions').innerHTML = posHTML;
+            
+            // Drift metric
+            document.getElementById('spec-status').innerText = `SIG: ${(signalCount + Math.random()).toFixed(1)} Hz`;
+            updateDrift(avgScore, data.ping_ms);
         }
 
         async function closeAll() {
@@ -271,56 +312,53 @@
                 fetchState();
             }
         }
-
         setInterval(fetchState, 2000);
         fetchState();
 
-        // WebSocket for logs
+        // ------------------
+        // WEBSOCKET LOGS
+        // ------------------
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(wsProtocol + '//' + window.location.host + '/api/logs');
         const consoleEl = document.getElementById('console');
-        
         ws.onmessage = function(event) {
             const span = document.createElement('div');
             span.className = 'mb-1';
-            
             let text = event.data;
             if(text.includes('ERROR') || text.includes('REJECTED')) {
                 span.classList.add('text-red-500');
             } else if(text.includes('APPROVED') || text.includes('STRONG BUY')) {
-                span.classList.add('text-green-400');
+                span.classList.add('text-[#00ff88]');
             } else if(text.includes('[BRAIN]')) {
-                span.classList.add('text-blue-400');
+                span.classList.add('text-[#00ffff]');
             } else {
                 span.classList.add('text-gray-500');
             }
-            
             span.textContent = text;
             consoleEl.appendChild(span);
-            if(consoleEl.childNodes.length > 200) {
-                consoleEl.removeChild(consoleEl.firstChild);
-            }
+            if(consoleEl.childNodes.length > 200) consoleEl.removeChild(consoleEl.firstChild);
             consoleEl.scrollTop = consoleEl.scrollHeight;
         };
-        
-        // ASCII Singularity Donut Animation
+
+        // ------------------
+        // SINGULARITY 3D TORUS
+        // ------------------
         const preDonut = document.getElementById('singularity-donut');
         let A = 1, B = 1;
         const renderDonut = () => {
-            let b = [];
-            let z = [];
-            A += 0.05;
-            B += 0.03;
+            // Smooth speed transition
+            singularitySpeed += (targetSingularitySpeed - singularitySpeed) * 0.1;
+            A += singularitySpeed;
+            B += (singularitySpeed * 0.6); // slight offset for B
+            
+            let b = [], z = [];
             let cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(B), sB = Math.sin(B);
             for(let k=0; k<1760; k++) { b[k] = k % 80 === 79 ? "\n" : " "; z[k] = 0; }
             for(let j=0; j<6.28; j+=0.07) {
                 let ct = Math.cos(j), st = Math.sin(j);
                 for(let i=0; i<6.28; i+=0.02) {
                     let sp = Math.sin(i), cp = Math.cos(i),
-                        h = ct + 2, 
-                        D = 1 / (sp * h * sA + st * cA + 5), 
-                        t = sp * h * cA - st * sA; 
-                    
+                        h = ct + 2, D = 1 / (sp * h * sA + st * cA + 5), t = sp * h * cA - st * sA; 
                     let x = 0 | (40 + 30 * D * (cp * h * cB - t * sB)),
                         y = 0 | (12 + 15 * D * (cp * h * sB + t * cB)),
                         o = x + 80 * y,
@@ -331,9 +369,127 @@
                     }
                 }
             }
-            if(preDonut) preDonut.innerHTML = ' ' + b.join("").replace(/\n/g, '\n ');
+            if(preDonut) preDonut.innerHTML = b.join("");
         };
         setInterval(renderDonut, 50);
+
+        // ------------------
+        // FREQUENCY SPECTRUM
+        // ------------------
+        const specCanvas = document.getElementById('spectrum-canvas');
+        const specCtx = specCanvas.getContext('2d');
+        let specBars = Array(64).fill(0).map(() => ({ val: 0, target: 0 }));
+
+        function resizeCanvas() {
+            const rect = specCanvas.parentElement.getBoundingClientRect();
+            specCanvas.width = rect.width;
+            specCanvas.height = rect.height;
+            const dRect = driftCanvas.parentElement.getBoundingClientRect();
+            driftCanvas.width = dRect.width;
+            driftCanvas.height = dRect.height;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        
+        function exciteSpectrum(scans) {
+            // Function: Represents market confidence grouped by artificial frequency bands
+            scans.forEach(scan => {
+                let score = scan.brain_score || 0;
+                let centerIdx = Math.floor(Math.random() * specBars.length);
+                let spread = 2 + Math.floor(score / 20); // Higher confidence = larger spread
+                let intensity = (score / 100);
+                
+                for(let i = -spread; i <= spread; i++) {
+                    if (centerIdx + i >= 0 && centerIdx + i < specBars.length) {
+                        let dropoff = 1 - (Math.abs(i)/spread);
+                        specBars[centerIdx + i].target += intensity * dropoff * 80;
+                    }
+                }
+            });
+        }
+
+        function drawSpectrum() {
+            const w = specCanvas.width;
+            const h = specCanvas.height;
+            specCtx.clearRect(0, 0, w, h);
+            
+            const barWidth = (w / specBars.length);
+            
+            specBars.forEach((bar, i) => {
+                // Add random noise floor based on signal count
+                if (bar.target <= 0) {
+                    bar.target = Math.random() * (signalCount > 0 ? 10 : 2);
+                }
+                
+                // Spring physics
+                bar.val += (bar.target - bar.val) * 0.2;
+                bar.target *= 0.85; // Natural decay
+                
+                let barH = Math.min(bar.val, h - 2);
+                let x = i * barWidth;
+                let y = h - barH;
+                
+                // Color mapping: hot/cyan for high, grey for low
+                let intensityP = barH / h;
+                if (intensityP > 0.6) specCtx.fillStyle = '#00ffff';
+                else if (intensityP > 0.3) specCtx.fillStyle = '#00ff88';
+                else specCtx.fillStyle = '#1a331a';
+
+                specCtx.fillRect(x + 1, y, barWidth - 2, barH);
+            });
+            requestAnimationFrame(drawSpectrum);
+        }
+
+        // ------------------
+        // DRIFT SURFACE
+        // ------------------
+        const driftCanvas = document.getElementById('drift-canvas');
+        const driftCtx = driftCanvas.getContext('2d');
+        const driftData = Array(50).fill(0);
+        let driftPhase = 0;
+
+        function updateDrift(score, ping) {
+            driftPhase += 0.5;
+            let val = score * Math.sin(driftPhase) + (Math.random() * (ping/100));
+            driftData.push(val);
+            driftData.shift();
+        }
+
+        function drawDrift() {
+            const w = driftCanvas.width;
+            const h = driftCanvas.height;
+            driftCtx.clearRect(0, 0, w, h);
+            
+            driftCtx.beginPath();
+            const step = w / (driftData.length - 1);
+            
+            for(let i = 0; i < driftData.length; i++) {
+                let normVal = (driftData[i] + 100) / 200; // Normalize somewhat
+                normVal = Math.max(0.1, Math.min(0.9, normVal));
+                let x = i * step;
+                let y = h - (normVal * h);
+                if (i === 0) driftCtx.moveTo(x, y);
+                else driftCtx.lineTo(x, y);
+            }
+            
+            driftCtx.strokeStyle = '#ff9900';
+            driftCtx.lineWidth = 1.5;
+            driftCtx.stroke();
+            
+            // Glow
+            driftCtx.shadowBlur = 10;
+            driftCtx.shadowColor = "rgba(255,153,0,0.5)";
+            driftCtx.stroke();
+            driftCtx.shadowBlur = 0;
+
+            requestAnimationFrame(drawDrift);
+        }
+
+        // Init Canvases
+        setTimeout(() => {
+            resizeCanvas();
+            drawSpectrum();
+            drawDrift();
+        }, 500);
 
     </script>
 </body>
