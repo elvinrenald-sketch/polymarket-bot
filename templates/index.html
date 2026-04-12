@@ -55,6 +55,17 @@
             letter-spacing: 2px;
             color: #888;
         }
+
+        @keyframes rgbFade {
+            0% { color: #00ff88; text-shadow: 0 0 8px rgba(0,255,136,0.6); }
+            25% { color: #00aaff; text-shadow: 0 0 8px rgba(0,170,255,0.6); }
+            50% { color: #ff00ff; text-shadow: 0 0 8px rgba(255,0,255,0.6); }
+            75% { color: #ffaa00; text-shadow: 0 0 8px rgba(255,170,0,0.6); }
+            100% { color: #00ff88; text-shadow: 0 0 8px rgba(0,255,136,0.6); }
+        }
+        .singularity-color-fade {
+            animation: rgbFade 4s infinite linear;
+        }
     </style>
 </head>
 <body class="h-screen flex flex-col p-2 space-y-2">
@@ -151,7 +162,7 @@
                     </div>
                     <div class="flex-1 flex items-center justify-center overflow-hidden">
                         <!-- Better sizing and contrast for the 3D ASCII Torus -->
-                        <pre id="singularity-donut" class="text-[6px] text-[#00ff88] leading-[6px] font-mono font-bold opacity-90 drop-shadow-[0_0_5px_rgba(0,255,136,0.5)]"></pre>
+                        <pre id="singularity-donut" class="text-[6px] leading-[6px] font-mono font-bold opacity-90 singularity-color-fade"></pre>
                     </div>
                 </div>
 
@@ -217,7 +228,11 @@
             dataLabels: { enabled: false },
             stroke: { curve: 'smooth', width: 2 },
             xaxis: { type: 'numeric', labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
-            yaxis: { labels: { formatter: (val) => '$' + val.toFixed(2), style: { colors: '#666' } } },
+            yaxis: { 
+                min: function(min) { return Math.max(0, min - (min * 0.05)); },
+                max: function(max) { return max + (max * 0.05); },
+                labels: { formatter: (val) => '$' + val.toFixed(2), style: { colors: '#666' } } 
+            },
             grid: { borderColor: '#1a331a', strokeDashArray: 2, xaxis: { lines: { show: true } }, yaxis: { lines: { show: true } } },
             theme: { mode: 'dark' }
         };
