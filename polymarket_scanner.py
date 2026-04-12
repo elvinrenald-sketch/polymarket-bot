@@ -120,18 +120,20 @@ CFG = {
     'MAX_POSITIONS'       : 5,         # Max 5 concurrent positions
     'MAX_EXPOSURE_PCT'    : 0.50,      # Max 50% of equity exposed
 
-    # Auto-Close rules — TAKE PROFIT EARLY, don't wait for resolution
-    'TAKE_PROFIT_PCT'     : 50.0,      # Close @ +50% profit
-    'STOP_LOSS_PCT'       : 25.0,      # Stop loss at -25%
+    # Auto-Close rules — WHALE MODE: Cut losses fast, lock profits early
+    'TAKE_PROFIT_PCT'     : 35.0,      # Close @ +35% profit (lock in early!)
+    'STOP_LOSS_PCT'       : 15.0,      # Stop loss at -15% (cut losses TIGHT)
     'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
     'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
     'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
-    'MIN_ML_CONFIDENCE'   : 53.0,      # Brain score minimum for entry
+    'MIN_ML_CONFIDENCE'   : 58.0,      # Brain score minimum (VERY picky!)
+    'MAX_ENTRY_PRICE'     : 0.73,      # Never buy above $0.73
+    'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto-exit if price >$0.90 (illiquid zone)
 
     # Signal filters (Brain does the real filtering)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
-    'MIN_MOMENTUM'        : 8.0,
-    'MIN_LIQUIDITY'       : 2000,
+    'MIN_MOMENTUM'        : 15.0,      # Only strong momentum trends
+    'MIN_LIQUIDITY'       : 3000,      # Avoid illiquid markets
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
@@ -1245,6 +1247,8 @@ class PositionManager:
                 should_close = True; close_reason = f'STOP_LOSS ({price_change_pct:.1f}%)'
             elif hold_hours >= CFG['MAX_HOLD_HOURS']:
                 should_close = True; close_reason = f'MAX_HOLD ({hold_hours:.0f}h)'
+            elif current_price >= CFG.get('LIQUIDITY_TRAP_PRICE', 0.90):
+                should_close = True; close_reason = f'LIQUIDITY_TRAP (price={current_price:.3f}≥0.90)'
             elif market_ghost:
                 # If market not in active scan AND it's been open more than 1 hour
                 if hold_hours > 1:
@@ -1564,7 +1568,7 @@ async def main():
                     and r['id'] not in already_opened
                     and r.get('question', '').strip() not in already_opened_questions
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
-                    and r.get('entry_price', 1.0) <= 0.80
+                    and r.get('entry_price', 1.0) <= CFG.get('MAX_ENTRY_PRICE', 0.73)
                     and r.get('spread_pct', 100) <= 8.0
                     and (r['days'] is None or r['days'] >= 0.02)
                 ]
