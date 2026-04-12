@@ -1497,6 +1497,8 @@ async def main():
                                 global BRAIN_LEARNING
                                 BRAIN_LEARNING = True
                                 await asyncio.to_thread(brain.train)
+                                # Keep BRAIN_LEARNING=True for at least 10s so frontend can display it
+                                await asyncio.sleep(10)
                                 BRAIN_LEARNING = False
                                 log.info("[BRAIN] ✅ Learning complete. Model updated.")
                             asyncio.create_task(_train_with_flag())
@@ -1661,13 +1663,35 @@ async def main():
                 for _ in range(sleep_chunks):
                     await asyncio.sleep(1.5)
                     try:
+                        if not pm.open_positions:
+                            continue
+                        # BATCH price fetch (1 request instead of N)
+                        tids = [p['token_id'] for p in pm.open_positions if p.get('token_id')]
+                        price_map = {}
+                        if tids:
+                            try:
+                                async with session.post(
+                                    f"{CFG['CLOB_API']}/midpoints",
+                                    json=[{"token_id": str(t)} for t in tids],
+                                    timeout=aiohttp.ClientTimeout(total=8)
+                                ) as resp:
+                                    if resp.status == 200:
+                                        raw_p = await resp.json()
+                                        if isinstance(raw_p, dict):
+                                            for k, v in raw_p.items():
+                                                if k != 'error':
+                                                    try: price_map[k] = float(v)
+                                                    except: pass
+                            except Exception:
+                                pass
                         fast_poses = []
                         for open_pos in pm.open_positions:
-                            cp = await fetch_price(session, open_pos['token_id'])
+                            tid = open_pos.get('token_id', '')
+                            cp = price_map.get(tid)
                             pl = None
-                            if cp is not None:
+                            if cp and cp > 0:
                                 pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
-                            fast_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
+                            fast_poses.append({"pos": open_pos, "live_price": cp or 0, "pnl": pl or 0})
                         if fast_poses:
                             WEB_STATE.positions = fast_poses
                     except Exception:
