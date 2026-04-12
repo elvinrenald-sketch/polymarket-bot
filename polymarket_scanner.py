@@ -1628,12 +1628,38 @@ async def main():
                 WEB_STATE.ping_ms = ms
                 WEB_STATE.stats = stats_j
                 WEB_STATE.top_scans = top
+                # Build positions with BATCH price fetch + cached fallback
                 active_poses = []
+                tids_main = [p['token_id'] for p in pm.open_positions if p.get('token_id')]
+                main_price_map = {}
+                if tids_main:
+                    try:
+                        async with session.post(
+                            f"{CFG['CLOB_API']}/midpoints",
+                            json=[{"token_id": str(t)} for t in tids_main],
+                            timeout=aiohttp.ClientTimeout(total=8)
+                        ) as resp:
+                            if resp.status == 200:
+                                raw_p = await resp.json()
+                                if isinstance(raw_p, dict):
+                                    for k, v in raw_p.items():
+                                        if k != 'error':
+                                            try: main_price_map[k] = float(v)
+                                            except: pass
+                    except Exception:
+                        pass
                 for open_pos in pm.open_positions:
-                    cp = await fetch_price(session, open_pos['token_id'])
-                    pl = None
-                    if cp is not None:
-                        pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
+                    tid = open_pos.get('token_id', '')
+                    cp = main_price_map.get(tid)
+                    # Fallback: use cached WEB_STATE price if API failed
+                    if not cp or cp <= 0:
+                        old_p = next((p for p in getattr(WEB_STATE, 'positions', [])
+                                      if p['pos'].get('id') == open_pos.get('id')), None)
+                        if old_p and old_p.get('live_price', 0) > 0:
+                            cp = old_p['live_price']
+                        else:
+                            cp = open_pos['entry_price']
+                    pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
                     active_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
                 WEB_STATE.positions = active_poses
                 
