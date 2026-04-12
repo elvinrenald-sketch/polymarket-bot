@@ -128,6 +128,7 @@ CFG = {
     'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
     'MIN_ML_CONFIDENCE'   : 58.0,      # Brain score minimum (VERY picky!)
     'MAX_ENTRY_PRICE'     : 0.73,      # Never buy above $0.73
+    'MIN_ENTRY_PRICE'     : 0.40,      # NEVER buy below $0.40 (Avoid underdog traps)
     'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto-exit if price >$0.90 (illiquid zone)
 
     # Signal filters (Brain does the real filtering)
@@ -1569,6 +1570,7 @@ async def main():
                     and r.get('question', '').strip() not in already_opened_questions
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
                     and r.get('entry_price', 1.0) <= CFG.get('MAX_ENTRY_PRICE', 0.73)
+                    and r.get('entry_price', 0.0) >= CFG.get('MIN_ENTRY_PRICE', 0.40)
                     and r.get('spread_pct', 100) <= 8.0
                     and (r['days'] is None or r['days'] >= 0.02)
                 ]
