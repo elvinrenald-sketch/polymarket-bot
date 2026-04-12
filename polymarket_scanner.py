@@ -105,7 +105,7 @@ CFG = {
     'CLOB_API'            : 'https://clob.polymarket.com',
 
     # Scanner
-    'SCAN_INTERVAL'       : 10,
+    'SCAN_INTERVAL'       : 5,
     'MARKETS_PER_PAGE'    : 100,
     'MAX_PAGES'           : 15,
     'DISPLAY_TOP'         : 10,
