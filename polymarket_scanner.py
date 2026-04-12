@@ -241,6 +241,7 @@ class GlobalState:
     positions: List[Dict[str, Any]] = []
     top_scans: List[Dict[str, Any]] = []
 
+BRAIN_LEARNING = False  # Global flag for frontend Singularity animation
 WEB_STATE = GlobalState()
 WS_CLIENTS: List[WebSocket] = []
 
@@ -322,7 +323,8 @@ async def get_state():
         "stats": stats_out,
         "positions": pos_out,
         "top_scans": scans_out,
-        "equity_curve": get_historical_equity_curve()
+        "equity_curve": get_historical_equity_curve(),
+        "brain_learning": BRAIN_LEARNING
     }
 
 @app.get("/api/debug")
@@ -1491,8 +1493,13 @@ async def main():
                         # Trigger continuous learning immediately after closing trades
                         if brain:
                             log.info("[BRAIN] Trade closed. Triggering continuous learning on 100+ historical trades...")
-                            # Run training in a background thread so we don't stall the scanner loop
-                            asyncio.create_task(asyncio.to_thread(brain.train))
+                            async def _train_with_flag():
+                                global BRAIN_LEARNING
+                                BRAIN_LEARNING = True
+                                await asyncio.to_thread(brain.train)
+                                BRAIN_LEARNING = False
+                                log.info("[BRAIN] ✅ Learning complete. Model updated.")
+                            asyncio.create_task(_train_with_flag())
                 all_tids = []
                 for m in raw:
                     tids = parse_token_ids(m)

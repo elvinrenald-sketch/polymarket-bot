@@ -66,6 +66,19 @@
         .singularity-color-fade {
             animation: rgbFade 4s infinite linear;
         }
+        .singularity-learning {
+            animation: rgbFade 0.5s infinite linear;
+            filter: brightness(2.5) drop-shadow(0 0 12px #00ffff);
+        }
+        @keyframes brainPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .brain-pulse {
+            animation: brainPulse 0.6s infinite;
+            color: #00ffff !important;
+            text-shadow: 0 0 10px #00ffff;
+        }
     </style>
 </head>
 <body class="h-screen flex flex-col p-2 space-y-2">
@@ -287,6 +300,21 @@
             else if(signalCount > 2) flowText = "NORMAL";
             else if(signalCount > 0) flowText = "LOW";
             document.getElementById('v-flow-rate').innerText = "FLOW: " + flowText;
+
+            // 2b. Brain Learning Visual Feedback on Singularity
+            const donutEl = document.getElementById('singularity-donut');
+            const flowEl = document.getElementById('v-flow-rate');
+            if (data.brain_learning) {
+                donutEl.classList.remove('singularity-color-fade');
+                donutEl.classList.add('singularity-learning');
+                flowEl.innerText = '🧠 BRAIN: LEARNING...';
+                flowEl.classList.add('brain-pulse');
+                targetSingularitySpeed = 0.25;  // 5x faster spin
+            } else {
+                donutEl.classList.remove('singularity-learning');
+                donutEl.classList.add('singularity-color-fade');
+                flowEl.classList.remove('brain-pulse');
+            }
 
             // Signal excitation for Frequency Spectrum
             if (data.top_scans && data.top_scans.length > 0) {
