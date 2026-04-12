@@ -1693,11 +1693,18 @@ async def main():
                         fast_poses = []
                         for open_pos in pm.open_positions:
                             tid = open_pos.get('token_id', '')
+                            
+                            # Fallback to last known price if API fails
+                            old_p = next((p for p in getattr(WEB_STATE, 'positions', []) if p['pos']['id'] == open_pos['id']), None)
+                            
                             cp = price_map.get(tid)
-                            pl = None
                             if cp and cp > 0:
                                 pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
-                            fast_poses.append({"pos": open_pos, "live_price": cp or 0, "pnl": pl or 0})
+                            else:
+                                cp = old_p['live_price'] if old_p else open_pos['entry_price']
+                                pl = old_p['pnl'] if old_p else 0
+                                
+                            fast_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
                         if fast_poses:
                             WEB_STATE.positions = fast_poses
                     except Exception:
