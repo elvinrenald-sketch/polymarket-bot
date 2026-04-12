@@ -314,7 +314,16 @@
             document.getElementById('v-trades').innerText = data.stats.closed_trades;
             document.getElementById('v-winrate').innerText = data.stats.win_rate.toFixed(1) + '%';
             
-            chart.updateSeries([{ data: data.equity_curve || [] }]);
+            // Update chart bounds dynamically to fix ApexCharts cache issue
+            const eqArray = data.equity_curve || [];
+            if (eqArray.length > 0) {
+                const minEq = Math.floor(Math.min(...eqArray)) - 1;
+                const maxEq = Math.ceil(Math.max(...eqArray)) + 1;
+                chart.updateOptions({
+                    yaxis: { min: minEq, max: maxEq, labels: { formatter: (val) => '$' + val.toFixed(2), style: { colors: '#666' } } }
+                }, false, false);
+            }
+            chart.updateSeries([{ data: eqArray }]);
 
             // Active Positions (Smart DOM Reconciliation & Number Tweening)
             const tbody = document.getElementById('active-positions');
