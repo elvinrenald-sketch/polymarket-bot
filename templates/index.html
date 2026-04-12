@@ -244,7 +244,7 @@
         // ------------------
         async function fetchState() {
             try {
-                const res = await fetch('/api/state');
+                const res = await fetch('/api/state?t=' + new Date().getTime());
                 const data = await res.json();
                 updateUI(data);
             } catch (err) {
