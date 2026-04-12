@@ -203,13 +203,31 @@ log = logging.getLogger('poly')
 # QUANT TERMINAL WEB DASHBOARD
 # ══════════════════════════════════════════════════════════════════
 
+def get_historical_equity_curve() -> List[float]:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        reset_id = CFG.get('STATS_RESET_ID', 0)
+        cur.execute("SELECT pnl_usd FROM positions WHERE status='CLOSED' AND id > ? ORDER BY id ASC", (reset_id,))
+        rows = cur.fetchall()
+        conn.close()
+        
+        curve = [CFG['BANKROLL']]
+        current_eq = CFG['BANKROLL']
+        for row in rows:
+            current_eq += float(row[0] or 0)
+            curve.append(current_eq)
+        return curve[-100:]
+    except Exception:
+        return [CFG['BANKROLL']]
+
 class GlobalState:
     scans: int = 0
     ping_ms: int = 0
     stats: Dict[str, Any] = {'closed_trades': 0, 'realized_pnl': 0, 'win_rate': 0.0}
     positions: List[Dict[str, Any]] = []
     top_scans: List[Dict[str, Any]] = []
-    equity_curve: List[float] = []
+    equity_curve: List[float] = get_historical_equity_curve()
 
 WEB_STATE = GlobalState()
 WS_CLIENTS: List[WebSocket] = []
@@ -1400,6 +1418,8 @@ async def main():
     await pm.refresh()
     already_opened = db_get_open_market_ids()
     already_opened_questions = db_get_open_market_questions()
+    
+    WEB_STATE.equity_curve = get_historical_equity_curve()
 
     connector = aiohttp.TCPConnector(limit=50, limit_per_host=15, ttl_dns_cache=300, ssl=False)
     hdrs = {'User-Agent': 'Mozilla/5.0 PolyBot/12.0', 'Accept': 'application/json'}
@@ -1538,8 +1558,9 @@ async def main():
                     active_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
                 WEB_STATE.positions = active_poses
                 
-                if not WEB_STATE.equity_curve or WEB_STATE.equity_curve[-1] != stats_j['pnl']:
-                    WEB_STATE.equity_curve.append(stats_j['pnl'])
+                current_eq = CFG['BANKROLL'] + stats_j['pnl']
+                if not WEB_STATE.equity_curve or abs(WEB_STATE.equity_curve[-1] - current_eq) > 0.001:
+                    WEB_STATE.equity_curve.append(current_eq)
                     if len(WEB_STATE.equity_curve) > 100:
                         WEB_STATE.equity_curve = WEB_STATE.equity_curve[-100:]
                 
