@@ -1575,10 +1575,16 @@ async def main():
 
                 # Train Brain every 15 scans
                 if brain and scans % 15 == 0:
-                    try:
-                        await asyncio.to_thread(brain.train)
-                    except Exception:
-                        pass
+                    async def _periodic_train():
+                        try:
+                            global BRAIN_LEARNING
+                            BRAIN_LEARNING = True
+                            await asyncio.to_thread(brain.train)
+                            await asyncio.sleep(10)
+                            BRAIN_LEARNING = False
+                        except Exception:
+                            pass
+                    asyncio.create_task(_periodic_train())
 
                 if auto_candidates:
                     can, _ = pm.can_open()
