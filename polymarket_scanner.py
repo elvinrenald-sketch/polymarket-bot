@@ -1487,6 +1487,12 @@ async def main():
                         for c in closed_this_scan:
                             already_opened.discard(c['pos']['market_id'])
                             already_opened_questions.discard(c['pos'].get('question', '').strip())
+                        
+                        # Trigger continuous learning immediately after closing trades
+                        if brain:
+                            log.info("[BRAIN] Trade closed. Triggering continuous learning on 100+ historical trades...")
+                            # Run training in a background thread so we don't stall the scanner loop
+                            asyncio.create_task(asyncio.to_thread(brain.train))
                 all_tids = []
                 for m in raw:
                     tids = parse_token_ids(m)
