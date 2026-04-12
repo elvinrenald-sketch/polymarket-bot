@@ -740,15 +740,26 @@ async def telegram_listener(session, pm):
                                 continue
                             txt = f"<b>POSISI AKTIF ({len(ops)}/{CFG['MAX_POSITIONS']})</b>\n\n"
                             for op in ops:
-                                cur_price = await fetch_price(session, op['token_id'])
-                                pnl_str = "<i>N/A</i>"
-                                cur_price_str = "<i>N/A</i>"
-                                
-                                if cur_price is not None:
+                                # Use cached price from WEB_STATE first (no extra API call)
+                                cached = next(
+                                    (p for p in (WEB_STATE.positions or [])
+                                     if p['pos'].get('id') == op['id']), None
+                                )
+                                if cached and cached.get('live_price', 0) > 0:
+                                    cur_price = cached['live_price']
+                                    pnl_val = cached.get('pnl', 0)
                                     cur_price_str = f"{cur_price:.4f}"
-                                    pnl = (cur_price - op['entry_price']) * op.get('shares', 0)
-                                    pnl_str = f"<b>${pnl:+.2f}</b>"
-                                    
+                                    pnl_str = f"<b>${pnl_val:+.2f}</b>"
+                                else:
+                                    # Fallback to individual API call
+                                    cur_price = await fetch_price(session, op['token_id'])
+                                    if cur_price is not None and cur_price > 0:
+                                        cur_price_str = f"{cur_price:.4f}"
+                                        pnl_val = (cur_price - op['entry_price']) * op.get('shares', 0)
+                                        pnl_str = f"<b>${pnl_val:+.2f}</b>"
+                                    else:
+                                        cur_price_str = f"{op['entry_price']:.4f} (cached)"
+                                        pnl_str = "$0.00"
                                 txt += f"#{op['id']} <b>{op['question'][:40]}...</b>\n"
                                 txt += f"Entry: {op['entry_price']:.4f} | Cur: {cur_price_str}\n"
                                 txt += f"Size: ${op.get('amount_usd', 0):.2f} | PnL: {pnl_str}\n\n"
@@ -1200,8 +1211,16 @@ class PositionManager:
             except Exception: pass
 
             current_price = await fetch_price(session, token_id)
-            if current_price is None:
-                current_price = entry_price
+            if current_price is None or current_price <= 0:
+                # Try cached price from WEB_STATE before falling back to entry_price
+                cached_pos = next(
+                    (p for p in getattr(WEB_STATE, 'positions', [])
+                     if p['pos'].get('id') == pos['id']), None
+                )
+                if cached_pos and cached_pos.get('live_price', 0) > 0:
+                    current_price = cached_pos['live_price']
+                else:
+                    current_price = entry_price
 
             price_change_pct = 0.0
             if entry_price > 0:
@@ -1665,13 +1684,14 @@ async def main():
 
             try:
                 # Fast polling for active positions (Real-Time UI updates)
-                sleep_chunks = max(1, int(CFG['SCAN_INTERVAL'] / 1.5))
+                # Use 3s interval to avoid rate-limit on Polymarket CLOB API
+                sleep_chunks = max(1, int(CFG['SCAN_INTERVAL'] / 3.0))
                 for _ in range(sleep_chunks):
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(3.0)
                     try:
                         if not pm.open_positions:
                             continue
-                        # BATCH price fetch (1 request instead of N)
+                        # BATCH price fetch (1 request for all positions)
                         tids = [p['token_id'] for p in pm.open_positions if p.get('token_id')]
                         price_map = {}
                         if tids:
@@ -1690,20 +1710,22 @@ async def main():
                                                     except: pass
                             except Exception:
                                 pass
+                        
+                        # GUARD: If API returned nothing, skip update entirely to preserve last known state
+                        if not price_map:
+                            continue
+                        
                         fast_poses = []
                         for open_pos in pm.open_positions:
                             tid = open_pos.get('token_id', '')
-                            
-                            # Fallback to last known price if API fails
-                            old_p = next((p for p in getattr(WEB_STATE, 'positions', []) if p['pos']['id'] == open_pos['id']), None)
-                            
+                            # Fallback to last known price if this specific token is missing
+                            old_p = next((p for p in getattr(WEB_STATE, 'positions', []) if p['pos'].get('id') == open_pos.get('id')), None)
                             cp = price_map.get(tid)
                             if cp and cp > 0:
                                 pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
                             else:
-                                cp = old_p['live_price'] if old_p else open_pos['entry_price']
+                                cp = old_p['live_price'] if old_p and old_p.get('live_price', 0) > 0 else open_pos['entry_price']
                                 pl = old_p['pnl'] if old_p else 0
-                                
                             fast_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
                         if fast_poses:
                             WEB_STATE.positions = fast_poses
