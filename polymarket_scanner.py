@@ -113,7 +113,7 @@ CFG = {
 
     # Risk Management — Dynamic Sizing
     'BANKROLL'            : 10.00,     # Starting equity
-    'STATS_RESET_TS'      : '2026-04-12 01:15:00', # Tampilkan trade SETELAH waktu ini. History tetap dipakai oleh ML!
+    'STATS_RESET_ID'      : 82,        # Tampilkan trade SETELAH id 82 (history dipakai ML!)
     'BET_PCT'             : 0.10,      # 10% of equity per trade ($10→$1, $20→$2)
     'MIN_BET'             : 1.00,      # Minimum $1 (Polymarket requirement)
     'MAX_BET'             : 5.00,      # Maximum bet $5.00
@@ -550,27 +550,27 @@ def db_get_stats() -> dict:
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        reset_ts = CFG.get('STATS_RESET_TS', '2000-01-01 00:00:00')
+        reset_id = CFG.get('STATS_RESET_ID', 0)
         
-        cur.execute("SELECT COUNT(*) FROM positions WHERE open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COUNT(*) FROM positions WHERE id > ?", (reset_id,))
         total = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND id > ?", (reset_id,))
         closed = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN' AND open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN' AND id > ?", (reset_id,))
         open_c = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='WIN' AND open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='WIN' AND id > ?", (reset_id,))
         wins = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='LOSS' AND open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='LOSS' AND id > ?", (reset_id,))
         losses = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='VOID' AND open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='VOID' AND id > ?", (reset_id,))
         voids = cur.fetchone()[0]
-        cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED' AND open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COALESCE(SUM(pnl_usd),0) FROM positions WHERE status='CLOSED' AND id > ?", (reset_id,))
         pnl = cur.fetchone()[0]
-        cur.execute("SELECT COALESCE(SUM(amount_usd),0) FROM positions WHERE status='OPEN' AND open_ts >= ?", (reset_ts,))
+        cur.execute("SELECT COALESCE(SUM(amount_usd),0) FROM positions WHERE status='OPEN' AND id > ?", (reset_id,))
         exposure = cur.fetchone()[0]
         cur.execute('''SELECT open_ts,signal,substr(question,1,30),
                               entry_price,amount_usd,status,pnl_usd,close_reason
-                       FROM positions WHERE open_ts >= ? ORDER BY id DESC LIMIT 8''', (reset_ts,))
+                       FROM positions WHERE id > ? ORDER BY id DESC LIMIT 8''', (reset_id,))
         recent = cur.fetchall(); conn.close()
         # Win Rate = Wins / (Wins + Losses) — VOID trades excluded
         real_trades = wins + losses
@@ -1111,7 +1111,8 @@ class PositionManager:
         try:
             conn = sqlite3.connect(DB_PATH)
             cur = conn.cursor()
-            cur.execute("SELECT COALESCE(SUM(pnl_usd), 0) FROM positions WHERE status='CLOSED'")
+            reset_id = CFG.get('STATS_RESET_ID', 0)
+            cur.execute("SELECT COALESCE(SUM(pnl_usd), 0) FROM positions WHERE status='CLOSED' AND id > ?", (reset_id,))
             pnl = cur.fetchone()[0]
             conn.close()
             return max(1.0, CFG['BANKROLL'] + pnl)
@@ -1234,7 +1235,8 @@ class PositionManager:
         try:
             conn = sqlite3.connect(DB_PATH)
             cur = conn.cursor()
-            cur.execute("SELECT COALESCE(SUM(pnl_usd), 0) FROM positions WHERE status='CLOSED'")
+            reset_id = CFG.get('STATS_RESET_ID', 0)
+            cur.execute("SELECT COALESCE(SUM(pnl_usd), 0) FROM positions WHERE status='CLOSED' AND id > ?", (reset_id,))
             total_pnl = cur.fetchone()[0]
             conn.close()
             equity = CFG['BANKROLL'] + total_pnl
