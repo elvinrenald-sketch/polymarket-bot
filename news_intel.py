@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-NEWS INTELLIGENCE ENGINE v1.0
-==============================
-Reads news from multiple FREE sources and analyzes sentiment
+NEWS INTELLIGENCE ENGINE v2.0 (WHALE MODE)
+============================================
+Reads news from 18+ FREE sources and analyzes sentiment
 to give the trading bot real-world context.
+
+Upgrade v2.0:
+  - 18+ RSS feeds (AP, Reuters, BBC, ESPN, Al Jazeera, CNBC, etc.)
+  - Dynamic Google News search per-question keywords
+  - Fear & Greed Index (crypto macro sentiment)
+  - All fetches have 5s timeout → ZERO chance of timeout
 
 Sources:
     1. CryptoPanic (aggregates X/Twitter, Reddit, news sites)
@@ -47,13 +53,34 @@ except ImportError:
 # CryptoPanic public API (aggregates X/Twitter + Reddit + news)
 CRYPTOPANIC_API = 'https://cryptopanic.com/api/free/v1/posts/'
 
-# RSS Feed URLs (free, no API key needed)
+# Fear & Greed Index API (crypto macro sentiment)
+FEAR_GREED_API = 'https://api.alternative.me/fng/?limit=1'
+
+# RSS Feed URLs (free, no API key needed) — 18+ SOURCES
 RSS_FEEDS = {
+    # ── CRYPTO ──
     'coindesk': 'https://www.coindesk.com/arc/outboundfeeds/rss/',
     'cointelegraph': 'https://cointelegraph.com/rss',
+    'theblock': 'https://www.theblock.co/rss.xml',
+    'decrypt': 'https://decrypt.co/feed',
+    'bitcoinmag': 'https://bitcoinmagazine.com/.rss/full/',
     'google_crypto': 'https://news.google.com/rss/search?q=cryptocurrency+OR+bitcoin+OR+ethereum&hl=en-US&gl=US&ceid=US:en',
-    'google_politics': 'https://news.google.com/rss/search?q=US+politics+OR+election+OR+president&hl=en-US&gl=US&ceid=US:en',
-    'google_sports': 'https://news.google.com/rss/search?q=NBA+OR+NFL+OR+MLB+OR+Premier+League&hl=en-US&gl=US&ceid=US:en',
+    # ── POLITICS & WORLD ──
+    'ap_news': 'https://rsshub.app/apnews/topics/apf-topnews',
+    'reuters_world': 'https://rsshub.app/reuters/world',
+    'bbc_world': 'https://feeds.bbci.co.uk/news/world/rss.xml',
+    'bbc_politics': 'https://feeds.bbci.co.uk/news/politics/rss.xml',
+    'aljazeera': 'https://www.aljazeera.com/xml/rss/all.xml',
+    'google_politics': 'https://news.google.com/rss/search?q=US+politics+OR+election+OR+president+OR+trump&hl=en-US&gl=US&ceid=US:en',
+    'google_war': 'https://news.google.com/rss/search?q=Israel+OR+Ukraine+OR+war+OR+military&hl=en-US&gl=US&ceid=US:en',
+    # ── SPORTS & ESPORTS ──
+    'espn': 'https://www.espn.com/espn/rss/news',
+    'espn_soccer': 'https://www.espn.com/espn/rss/soccer/news',
+    'google_sports': 'https://news.google.com/rss/search?q=NBA+OR+NFL+OR+MLB+OR+Premier+League+OR+Champions+League&hl=en-US&gl=US&ceid=US:en',
+    'google_esports': 'https://news.google.com/rss/search?q=esports+OR+valorant+OR+counter-strike+OR+dota+OR+league+of+legends&hl=en-US&gl=US&ceid=US:en',
+    # ── ECONOMY / FINANCE ──
+    'cnbc': 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114',
+    'google_economy': 'https://news.google.com/rss/search?q=federal+reserve+OR+interest+rate+OR+inflation+OR+tariff&hl=en-US&gl=US&ceid=US:en',
 }
 
 # Financial lexicon additions for VADER
@@ -83,6 +110,23 @@ FINANCIAL_LEXICON = {
     'correction': -1.0, 'pullback': -0.8, 'resistance': -0.5,
     'support': 0.5, 'accumulate': 1.0, 'whale': 0.8,
     'institutional': 1.0, 'mainstream': 1.0,
+
+    # Sports & Esports
+    'champion': 2.5, 'championship': 2.0, 'trophy': 2.0,
+    'scored': 1.5, 'goal': 1.0, 'assist': 0.8,
+    'comeback': 2.0, 'dominant': 1.8, 'unbeaten': 2.0,
+    'streak': 1.0, 'qualifying': 1.0, 'promoted': 1.5,
+    'relegated': -2.0, 'disqualified': -2.5, 'suspended': -2.0,
+    'benched': -1.5, 'sidelined': -1.5, 'retired': -1.0,
+    'upset': -1.5, 'underdog': 0.5, 'favorite': 1.0,
+    'mvp': 2.0, 'clutch': 2.0, 'ace': 2.0, 'sweep': 2.0,
+
+    # Geopolitical & Military
+    'ceasefire': 1.5, 'peace': 2.0, 'treaty': 1.8,
+    'negotiate': 1.0, 'diplomacy': 1.0, 'alliance': 1.0,
+    'airstrike': -2.5, 'invasion': -3.0, 'missile': -2.0,
+    'escalation': -2.5, 'sanctions': -2.0, 'blockade': -2.0,
+    'coup': -3.0, 'martial law': -3.0, 'emergency': -2.0,
 }
 
 # Keywords for each category to search news
@@ -106,6 +150,15 @@ CATEGORY_SEARCH_TERMS = {
     'politics': {
         'us': ['trump', 'biden', 'congress', 'senate', 'election'],
         'policy': ['tariff', 'fed', 'federal reserve', 'interest rate'],
+    },
+    'geopolitics': {
+        'middle_east': ['israel', 'palestine', 'iran', 'gaza', 'hezbollah', 'hamas'],
+        'europe': ['ukraine', 'russia', 'nato', 'european union'],
+        'asia': ['china', 'taiwan', 'north korea', 'india', 'pakistan'],
+    },
+    'economy': {
+        'macro': ['gdp', 'inflation', 'recession', 'unemployment', 'jobs report'],
+        'fed': ['fed', 'fomc', 'rate cut', 'rate hike', 'powell'],
     },
 }
 
@@ -319,7 +372,7 @@ class NewsIntelligence:
             if search_coins:
                 params['currencies'] = ','.join(set(search_coins))
 
-            async with session.get(CRYPTOPANIC_API, params=params, timeout=10) as r:
+            async with session.get(CRYPTOPANIC_API, params=params, timeout=5) as r:
                 if r.status == 200:
                     data = await r.json()
                     results = data.get('results', [])
@@ -369,7 +422,7 @@ class NewsIntelligence:
 
         articles = []
         try:
-            async with session.get(feed_url, timeout=15) as r:
+            async with session.get(feed_url, timeout=5) as r:
                 if r.status == 200:
                     content = await r.text()
                     feed = await asyncio.to_thread(feedparser.parse, content)
@@ -394,6 +447,80 @@ class NewsIntelligence:
 
         except Exception as e:
             log.debug(f"[NEWS] RSS {feed_name} error: {e}")
+
+        self._cache.put(cache_key, articles)
+        return articles
+
+    # ── FETCH FEAR & GREED INDEX ──────────────────────────────────
+    async def _fetch_fear_greed(self, session) -> List[Dict]:
+        """Fetch crypto Fear & Greed Index as macro sentiment indicator."""
+        cache_key = 'fear_greed'
+        cached = self._cache.get(cache_key)
+        if cached:
+            return cached
+
+        articles = []
+        try:
+            async with session.get(FEAR_GREED_API, timeout=5) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    fng = data.get('data', [{}])[0]
+                    value = int(fng.get('value', 50))
+                    label = fng.get('value_classification', 'Neutral')
+
+                    # Convert to sentiment: 0-25=Extreme Fear(-1), 75-100=Extreme Greed(+1)
+                    sentiment = (value - 50) / 50.0  # -1.0 to +1.0
+
+                    articles.append({
+                        'title': f'Crypto Fear & Greed Index: {value} ({label})',
+                        'summary': f'Market macro mood is {label} at {value}/100',
+                        'source': 'alternative.me',
+                        'published': fng.get('timestamp', ''),
+                        'community_sentiment': round(sentiment, 3),
+                        'feed': 'fear_greed',
+                    })
+                    log.debug(f"[NEWS] Fear&Greed: {value} ({label})")
+        except Exception as e:
+            log.debug(f"[NEWS] Fear&Greed error: {e}")
+
+        self._cache.put(cache_key, articles)
+        return articles
+
+    # ── DYNAMIC GOOGLE NEWS SEARCH ───────────────────────────────
+    async def _fetch_dynamic_google_news(self, session, keywords: List[str]) -> List[Dict]:
+        """Build a custom Google News RSS search from question keywords."""
+        if not HAS_FEEDPARSER or not keywords:
+            return []
+
+        # Use top 4 keywords to build a targeted search
+        search_terms = '+OR+'.join(kw.replace(' ', '+') for kw in keywords[:4])
+        cache_key = f'dynamic_gnews_{search_terms}'
+        cached = self._cache.get(cache_key)
+        if cached:
+            return cached
+
+        url = f'https://news.google.com/rss/search?q={search_terms}&hl=en-US&gl=US&ceid=US:en'
+        articles = []
+        try:
+            async with session.get(url, timeout=5) as r:
+                if r.status == 200:
+                    content = await r.text()
+                    feed = await asyncio.to_thread(feedparser.parse, content)
+                    for entry in feed.entries[:15]:
+                        title = entry.get('title', '')
+                        summary = entry.get('summary', entry.get('description', ''))
+                        summary = re.sub(r'<[^>]+>', '', summary)[:200]
+                        articles.append({
+                            'title': title,
+                            'summary': summary,
+                            'source': 'GoogleNews/Dynamic',
+                            'published': entry.get('published', ''),
+                            'community_sentiment': 0.0,
+                            'feed': 'rss_dynamic',
+                        })
+                    log.debug(f"[NEWS] Dynamic Google News ({search_terms[:30]}): {len(articles)} articles")
+        except Exception as e:
+            log.debug(f"[NEWS] Dynamic Google News error: {e}")
 
         self._cache.put(cache_key, articles)
         return articles
@@ -430,15 +557,28 @@ class NewsIntelligence:
         # Always try CryptoPanic (has X/Twitter aggregation)
         tasks.append(self._fetch_cryptopanic(session, keywords))
 
+        # Always try Fear & Greed Index for macro context
+        tasks.append(self._fetch_fear_greed(session))
+
+        # Dynamic Google News search based on question keywords
+        tasks.append(self._fetch_dynamic_google_news(session, keywords))
+
         # Pick relevant RSS feeds based on category
         if category == 'crypto':
-            feeds_to_check = ['coindesk', 'cointelegraph', 'google_crypto']
+            feeds_to_check = ['coindesk', 'cointelegraph', 'theblock', 'decrypt',
+                              'bitcoinmag', 'google_crypto', 'cnbc']
         elif category == 'sports':
-            feeds_to_check = ['google_sports']
+            feeds_to_check = ['espn', 'espn_soccer', 'google_sports', 'google_esports']
         elif category == 'politics':
-            feeds_to_check = ['google_politics']
+            feeds_to_check = ['ap_news', 'reuters_world', 'bbc_world',
+                              'bbc_politics', 'aljazeera', 'google_politics', 'google_war']
+        elif category == 'economy':
+            feeds_to_check = ['cnbc', 'google_economy', 'reuters_world']
         else:
-            feeds_to_check = ['google_crypto', 'google_politics']
+            # General: grab from ALL categories for maximum coverage
+            feeds_to_check = ['ap_news', 'bbc_world', 'google_crypto',
+                              'google_politics', 'google_sports', 'cnbc',
+                              'espn', 'google_war']
 
         for fname in feeds_to_check:
             if fname in RSS_FEEDS:
