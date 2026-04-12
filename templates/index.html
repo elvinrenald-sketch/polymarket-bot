@@ -229,8 +229,8 @@
             stroke: { curve: 'smooth', width: 2 },
             xaxis: { type: 'numeric', labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
             yaxis: { 
-                min: function(min) { return Math.max(0, min - (min * 0.05)); },
-                max: function(max) { return max + (max * 0.05); },
+                min: function(min) { return Math.floor(min * 0.95); },
+                max: function(max) { return Math.ceil(max * 1.05); },
                 labels: { formatter: (val) => '$' + val.toFixed(2), style: { colors: '#666' } } 
             },
             grid: { borderColor: '#1a331a', strokeDashArray: 2, xaxis: { lines: { show: true } }, yaxis: { lines: { show: true } } },
@@ -314,11 +314,6 @@
             document.getElementById('v-trades').innerText = data.stats.closed_trades;
             document.getElementById('v-winrate').innerText = data.stats.win_rate.toFixed(1) + '%';
             
-            // Fix equity curve if it only has 1 point (ApexCharts needs >=2 points to draw a line)
-            let eqData = data.equity_curve || [];
-            if (eqData.length === 1) {
-                eqData = [eqData[0], eqData[0]];
-            }
             chart.updateSeries([{ data: eqData }]);
 
             // Active Positions (Smart DOM Reconciliation & Number Tweening)

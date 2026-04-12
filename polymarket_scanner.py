@@ -204,22 +204,35 @@ log = logging.getLogger('poly')
 # ══════════════════════════════════════════════════════════════════
 
 def get_historical_equity_curve() -> List[float]:
+    """Computes cumulative equity starting from BANKROLL + closed PnL since reset_id."""
     try:
+        bankroll = float(CFG.get('BANKROLL', 10.0))
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        reset_id = CFG.get('STATS_RESET_ID', 0)
-        cur.execute("SELECT pnl_usd FROM positions WHERE status='CLOSED' AND id > ? ORDER BY id ASC", (reset_id,))
+        reset_id = int(CFG.get('STATS_RESET_ID', 82))
+        
+        # We only care about CLOSED positions after the reset ID
+        cur.execute("SELECT id, pnl_usd FROM positions WHERE status='CLOSED' AND id > ? ORDER BY id ASC", (reset_id,))
         rows = cur.fetchall()
         conn.close()
         
-        curve = [CFG['BANKROLL']]
-        current_eq = CFG['BANKROLL']
+        # Start with the bankroll as the first point
+        running_eq = bankroll
+        curve = [running_eq]
         for row in rows:
-            current_eq += float(row[0] or 0)
-            curve.append(current_eq)
+            pnl = float(row[1] or 0)
+            running_eq += pnl
+            curve.append(round(running_eq, 2))
+        
+        # Ensure at least 2 points for ApexCharts
+        if len(curve) < 2:
+            curve.append(running_eq)
+            
         return curve[-100:]
-    except Exception:
-        return [CFG['BANKROLL']]
+    except Exception as e:
+        log.error(f'[EQUITY_CURVE] Critical error: {e}')
+        br = float(CFG.get('BANKROLL', 10.0))
+        return [br, br]
 
 class GlobalState:
     scans: int = 0
@@ -311,6 +324,33 @@ async def get_state():
         "top_scans": scans_out,
         "equity_curve": get_historical_equity_curve()
     }
+
+@app.get("/api/debug")
+async def api_debug():
+    """Debug endpoint to see raw scanner configuration and DB state"""
+    try:
+        # Filter sensitive info
+        safe_cfg = {k: v for k, v in CFG.items() if 'KEY' not in k and 'TOKEN' not in k}
+        
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        reset_id = CFG.get('STATS_RESET_ID', 82)
+        
+        cur.execute("SELECT id, question, pnl_usd, status, result FROM positions ORDER BY id DESC LIMIT 50")
+        recent_db = cur.fetchall()
+        
+        cur.execute("SELECT COUNT(*), SUM(pnl_usd) FROM positions WHERE status='CLOSED' AND id > ?", (reset_id,))
+        stats = cur.fetchone()
+        conn.close()
+        
+        return {
+            "config": safe_cfg,
+            "equity_curve_raw": get_historical_equity_curve(),
+            "db_stats": {"count_after_reset": stats[0], "pnl_after_reset": stats[1]},
+            "recent_positions": [{"id": r[0], "q": r[1], "pnl": r[2], "s": r[3], "r": r[4]} for r in recent_db]
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/api/closeall")
 async def api_closeall():
