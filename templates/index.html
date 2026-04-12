@@ -126,7 +126,7 @@
 
                 <!-- Chart -->
                 <div class="quant-panel flex-1 p-2 relative">
-                    <span class="absolute top-2 left-2 text-[10px] text-gray-600 tracking-widest z-10">EQUITY CURVE (REALIZED PNL)</span>
+                    <span class="absolute top-2 left-2 text-[10px] text-gray-600 tracking-widest z-10">EQUITY CURVE</span>
                     <div id="chart" class="w-full h-full"></div>
                 </div>
                 
@@ -216,7 +216,7 @@
         // EQUITY CHART
         // ------------------
         var options = {
-            series: [{ name: 'PnL', data: [] }],
+            series: [{ name: 'Equity', data: [] }],
             chart: {
                 type: 'area', height: '100%',
                 animations: { enabled: true, easing: 'linear', dynamicAnimation: { speed: 1000 } },

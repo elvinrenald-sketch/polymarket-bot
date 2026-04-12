@@ -227,7 +227,6 @@ class GlobalState:
     stats: Dict[str, Any] = {'closed_trades': 0, 'realized_pnl': 0, 'win_rate': 0.0}
     positions: List[Dict[str, Any]] = []
     top_scans: List[Dict[str, Any]] = []
-    equity_curve: List[float] = get_historical_equity_curve()
 
 WEB_STATE = GlobalState()
 WS_CLIENTS: List[WebSocket] = []
@@ -310,7 +309,7 @@ async def get_state():
         "stats": stats_out,
         "positions": pos_out,
         "top_scans": scans_out,
-        "equity_curve": WEB_STATE.equity_curve
+        "equity_curve": get_historical_equity_curve()
     }
 
 @app.post("/api/closeall")
@@ -1419,7 +1418,7 @@ async def main():
     already_opened = db_get_open_market_ids()
     already_opened_questions = db_get_open_market_questions()
     
-    WEB_STATE.equity_curve = get_historical_equity_curve()
+    # equity_curve is now computed fresh from DB in /api/state
 
     connector = aiohttp.TCPConnector(limit=50, limit_per_host=15, ttl_dns_cache=300, ssl=False)
     hdrs = {'User-Agent': 'Mozilla/5.0 PolyBot/12.0', 'Accept': 'application/json'}
@@ -1558,11 +1557,7 @@ async def main():
                     active_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
                 WEB_STATE.positions = active_poses
                 
-                current_eq = CFG['BANKROLL'] + stats_j['pnl']
-                if not WEB_STATE.equity_curve or abs(WEB_STATE.equity_curve[-1] - current_eq) > 0.001:
-                    WEB_STATE.equity_curve.append(current_eq)
-                    if len(WEB_STATE.equity_curve) > 100:
-                        WEB_STATE.equity_curve = WEB_STATE.equity_curve[-100:]
+                # equity_curve is now computed fresh from DB in /api/state
                 
                 # --- HANDLE EMERGENCY CLOSE FROM WEB ---
                 global WEB_TRIGGER_CLOSE_ALL
