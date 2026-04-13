@@ -473,6 +473,7 @@ def init_db():
     log.info(f'DB OK: {DB_PATH}')
     # Run one-time migration to fix old data
     _migrate_void_trades()
+    _cleanup_duplicate_trades()
 
 def _migrate_void_trades():
     """One-time migration: convert old LOSS trades with P&L ~$0 to VOID.
@@ -510,6 +511,42 @@ def _migrate_void_trades():
         conn.close()
     except Exception as e:
         log.warning(f'[MIGRATION] Error: {e}')
+
+def _cleanup_duplicate_trades():
+    """Removes phantom duplicate trades caused by the re-entry bug."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        
+        # Get all duplicates by market_id
+        cur.execute("""
+            SELECT market_id, COUNT(*) 
+            FROM positions 
+            GROUP BY market_id 
+            HAVING COUNT(*) > 1
+        """)
+        duplicates = cur.fetchall()
+
+        total_deleted = 0
+        for market_id, count in duplicates:
+            if not market_id: continue
+            cur.execute("SELECT id FROM positions WHERE market_id = ? ORDER BY id ASC", (market_id,))
+            ids = [r[0] for r in cur.fetchall()]
+            
+            # Keep the first trade, delete the rest
+            ids_to_delete = ids[1:]
+            for del_id in ids_to_delete:
+                cur.execute("DELETE FROM positions WHERE id = ?", (del_id,))
+                total_deleted += 1
+
+        if total_deleted > 0:
+            conn.commit()
+            log.info(f'[CLEANUP] DELETED {total_deleted} duplicate ghost trades. Stats are now real.')
+        
+        conn.close()
+    except Exception as e:
+        log.warning(f'[CLEANUP] Error: {e}')
+
 
 def db_open_position(r: dict, amount: float, shares: float) -> int:
     ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -588,21 +625,22 @@ def db_get_open_positions() -> List[dict]:
         return []
 
 def db_get_open_market_ids() -> set:
+    """Gets all traded market IDs (open and closed) to prevent re-entry."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT market_id FROM positions WHERE status='OPEN'")
+        cur.execute("SELECT market_id FROM positions")
         rows = cur.fetchall(); conn.close()
         return {r[0] for r in rows}
     except Exception:
         return set()
 
 def db_get_open_market_questions() -> set:
-    """Gets a set of exact questions that are currently open to prevent duplicate cross-id betting."""
+    """Gets a set of exact questions that have been traded to prevent duplicate crossing."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT question FROM positions WHERE status='OPEN'")
+        cur.execute("SELECT question FROM positions")
         rows = cur.fetchall(); conn.close()
         return {r[0].strip() for r in rows if r[0]}
     except Exception:
@@ -1510,9 +1548,9 @@ async def main():
                     closed_this_scan = await pm.check_and_close(session, active_market_ids=active_ids)
                     if closed_this_scan:
                         await pm.refresh()
-                        for c in closed_this_scan:
-                            already_opened.discard(c['pos']['market_id'])
-                            already_opened_questions.discard(c['pos'].get('question', '').strip())
+                        await pm.refresh()
+                        # NOTE: We DO NOT discard from already_opened sets here.
+                        # We want to permanently ban re-entering a market we already traded.
                         
                         # Trigger continuous learning immediately after closing trades
                         if brain:
@@ -1683,8 +1721,7 @@ async def main():
                             cur_price = op['entry_price']
                         pnl = db_close_position(op['id'], cur_price, "WEB_CLOSEALL")
                         await tg_close(session, op, cur_price, pnl, "WEB_CLOSEALL")
-                        already_opened.discard(op['market_id'])
-                        already_opened_questions.discard(op.get('question', '').strip())
+                        # intentionally keeping in already_opened to prevent re-entry
                     await pm.refresh()
                     WEB_TRIGGER_CLOSE_ALL = False
 
@@ -1699,8 +1736,7 @@ async def main():
                                 cur_price = op['entry_price']
                             pnl = db_close_position(op['id'], cur_price, "WEB_MANUAL_CLOSE")
                             await tg_close(session, op, cur_price, pnl, "WEB_MANUAL_CLOSE")
-                            already_opened.discard(op['market_id'])
-                            already_opened_questions.discard(op.get('question', '').strip())
+                            # intentionally keeping in already_opened to prevent re-entry
                             closed_any = True
                     if closed_any:
                         await pm.refresh()
