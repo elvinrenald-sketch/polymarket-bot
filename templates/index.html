@@ -192,26 +192,36 @@
             </div>
         </div>
 
-        <!-- Bottom Row: Spectral Visualizers -->
-        <div class="h-32 grid grid-cols-12 gap-2 flex-shrink-0">
-            <!-- Frequency Spectrum -->
-            <div class="col-span-8 quant-panel relative overflow-hidden flex items-end pt-6">
-                <!-- Overlay Header -->
-                <div class="absolute top-0 left-0 w-full p-2 flex justify-between z-10 border-b border-[#1a331a] bg-[#050505]/80 pointer-events-none">
-                    <span class="text-[10px] text-gray-500 tracking-widest">FREQUENCY SPECTRUM <span class="ml-2 text-gray-700">| CONFIDENCE SCORING</span></span>
-                    <span class="text-[9px] text-[#00ffff] tracking-widest" id="spec-status">SIG: 0 Hz</span>
+        <!-- Bottom Row: NEURAL PULSE + BRAIN DECISIONS -->
+        <div class="h-36 grid grid-cols-12 gap-2 flex-shrink-0">
+            <!-- NEURAL PULSE: Real-time EKG heartbeat synced to bot scans -->
+            <div class="col-span-5 quant-panel relative overflow-hidden flex flex-col">
+                <div class="p-2 flex justify-between border-b border-[#1a331a] bg-[#050505]/80 z-10 flex-shrink-0">
+                    <span class="text-[10px] text-gray-500 tracking-widest">NEURAL PULSE <span class="ml-2 text-gray-700">| SCAN ACTIVITY</span></span>
+                    <span class="text-[9px] text-[#00ffff] tracking-widest" id="pulse-status">● ALIVE</span>
                 </div>
-                <!-- Canvas -->
-                <canvas id="spectrum-canvas" class="w-full h-full"></canvas>
+                <div class="flex-1 flex items-stretch">
+                    <canvas id="pulse-canvas" class="flex-1"></canvas>
+                    <!-- Mini filter funnel -->
+                    <div class="w-28 flex flex-col justify-center text-[9px] px-2 border-l border-[#1a331a] space-y-1">
+                        <div class="text-gray-600 tracking-widest mb-1">FILTER FUNNEL</div>
+                        <div class="flex justify-between"><span class="text-gray-500">Markets</span><span id="funnel-total" class="text-white">0</span></div>
+                        <div class="flex justify-between"><span class="text-gray-500">Valid</span><span id="funnel-valid" class="text-[#00ff88]">0</span></div>
+                        <div class="flex justify-between"><span class="text-gray-500">Passed</span><span id="funnel-passed" class="text-[#00ffff]">0</span></div>
+                        <div class="flex justify-between"><span class="text-gray-500">Top Reject</span><span id="funnel-reason" class="text-[#ff6666] truncate max-w-[70px]">—</span></div>
+                    </div>
+                </div>
             </div>
             
-            <!-- Price Action / Kelly Surface -->
-            <div class="col-span-4 quant-panel relative overflow-hidden flex items-end pt-6">
-                <div class="absolute top-0 left-0 w-full p-2 flex justify-between z-10 border-b border-[#1a331a] bg-[#050505]/80 pointer-events-none">
-                    <span class="text-[10px] text-gray-500 tracking-widest">DRIFT SURFACE</span>
-                    <span class="text-[9px] text-orange-400 tracking-widest">VOLATILITY</span>
+            <!-- BRAIN DECISIONS: Live feed of APPROVED/REJECTED -->
+            <div class="col-span-7 quant-panel relative overflow-hidden flex flex-col">
+                <div class="p-2 flex justify-between border-b border-[#1a331a] bg-[#050505]/80 z-10 flex-shrink-0">
+                    <span class="text-[10px] text-gray-500 tracking-widest">BRAIN DECISIONS <span class="ml-2 text-gray-700">| AI VERDICTS</span></span>
+                    <span class="text-[9px] tracking-widest"><span class="text-[#00ff88]" id="dec-approved">0</span> <span class="text-gray-600">APR</span> / <span class="text-[#ff3333]" id="dec-rejected">0</span> <span class="text-gray-600">REJ</span></span>
                 </div>
-                <canvas id="drift-canvas" class="w-full h-full"></canvas>
+                <div id="decisions-feed" class="flex-1 overflow-y-auto terminal-scroll p-2 space-y-1 text-[10px]">
+                    <div class="text-gray-600 text-center py-2">Waiting for brain decisions...</div>
+                </div>
             </div>
         </div>
     </main>
@@ -317,12 +327,53 @@
                 flowEl.classList.remove('brain-pulse');
             }
 
-            // Signal excitation for Frequency Spectrum
+            // Signal excitation for Neural Pulse
             if (data.top_scans && data.top_scans.length > 0) {
-                exciteSpectrum(data.top_scans);
+                pulseBeat(data.top_scans.length);
             }
 
-            // Calculate Floating PNL & Equity
+            // Update Filter Funnel
+            if (data.scan_summary) {
+                document.getElementById('funnel-total').innerText = data.scan_summary.total || 0;
+                document.getElementById('funnel-valid').innerText = data.scan_summary.total || 0;
+                document.getElementById('funnel-passed').innerText = data.scan_summary.passed || 0;
+                const reasons = data.scan_summary.rejected_reasons || {};
+                const topReason = Object.entries(reasons).sort((a,b) => b[1]-a[1])[0];
+                document.getElementById('funnel-reason').innerText = topReason ? topReason[0].replace(/_/g,' ') : '—';
+            }
+
+            // Update Brain Decisions Feed
+            if (data.last_decisions && data.last_decisions.length > 0) {
+                const feed = document.getElementById('decisions-feed');
+                let approvedCount = 0, rejectedCount = 0;
+                const html = data.last_decisions.slice().reverse().map(d => {
+                    if (d.type === 'APPROVED') approvedCount++;
+                    else rejectedCount++;
+                    const isApproved = d.type === 'APPROVED';
+                    const badge = isApproved 
+                        ? '<span class="bg-[#003300] text-[#00ff88] px-1 rounded">✅ APPROVED</span>'
+                        : '<span class="bg-[#330000] text-[#ff4444] px-1 rounded">❌ REJECTED</span>';
+                    const scoreColor = d.score >= 50 ? '#00ff88' : d.score >= 30 ? '#ffaa00' : '#ff4444';
+                    const reason = d.reason ? `<span class="text-gray-600 ml-1">| ${d.reason}</span>` : '';
+                    return `<div class="flex items-center gap-2 py-0.5 border-b border-[#0a150a] hover:bg-[#112211] transition-colors">
+                        <span class="text-gray-600 w-14 flex-shrink-0">${d.ts}</span>
+                        ${badge}
+                        <span class="text-gray-400 truncate flex-1" title="${d.question}">${d.question}</span>
+                        <span style="color:${scoreColor}" class="font-bold w-8 text-right">${d.score}</span>
+                        <span class="text-gray-600 w-8 text-right">${d.gates || ''}</span>
+                        ${reason}
+                    </div>`;
+                }).join('');
+                feed.innerHTML = html;
+                document.getElementById('dec-approved').innerText = approvedCount;
+                document.getElementById('dec-rejected').innerText = rejectedCount;
+            }
+
+            // Pulse status indicator
+            const pulseEl = document.getElementById('pulse-status');
+            const secsSincePing = data.ping_ms < 5000 ? true : false;
+            pulseEl.innerHTML = secsSincePing ? '● ALIVE' : '○ STALE';
+            pulseEl.style.color = secsSincePing ? '#00ffff' : '#ff3333';
             let floatingPnl = 0;
             data.positions.forEach(p => { floatingPnl += parseFloat(p.pnl || 0); });
             
@@ -400,9 +451,7 @@
                 pnlCell.dataset.target = pnl;
             });
             
-            // Drift metric
-            document.getElementById('spec-status').innerText = `SIG: ${(signalCount + Math.random()).toFixed(1)} Hz`;
-            updateDrift(avgScore, data.ping_ms);
+            // (removed old spectrum/drift references)
         }
 
         async function closePosition(posId) {
@@ -482,124 +531,115 @@
         setInterval(renderDonut, 50);
 
         // ------------------
-        // FREQUENCY SPECTRUM
+        // NEURAL PULSE EKG 
         // ------------------
-        const specCanvas = document.getElementById('spectrum-canvas');
-        const specCtx = specCanvas.getContext('2d');
-        let specBars = Array(64).fill(0).map(() => ({ val: 0, target: 0, noiseBase: 0 }));
-        let spectrumExcitePulse = 0;
+        const pulseCanvas = document.getElementById('pulse-canvas');
+        const pulseCtx = pulseCanvas.getContext('2d');
+        const pulseData = Array(200).fill(0);
+        let pulsePhase = 0;
+        let pulseBeatStrength = 0;
+        let lastBeatTime = 0;
 
         function resizeCanvas() {
-            if(!specCanvas.parentElement) return;
-            const rect = specCanvas.parentElement.getBoundingClientRect();
-            specCanvas.width = rect.width;
-            specCanvas.height = rect.height;
-            const dRect = driftCanvas.parentElement.getBoundingClientRect();
-            driftCanvas.width = dRect.width;
-            driftCanvas.height = dRect.height;
+            if(!pulseCanvas.parentElement) return;
+            const rect = pulseCanvas.parentElement.getBoundingClientRect();
+            pulseCanvas.width = rect.width;
+            pulseCanvas.height = rect.height;
         }
         window.addEventListener('resize', resizeCanvas);
-        
-        function exciteSpectrum(scans) {
-            // Trigger a wave of excitement that lasts a bit longer
-            spectrumExcitePulse = 1.0;
+
+        function pulseBeat(signalStrength) {
+            pulseBeatStrength = Math.min(1.0, signalStrength * 0.15);
+            lastBeatTime = performance.now();
         }
 
-        function drawSpectrum() {
-            const w = specCanvas.width;
-            const h = specCanvas.height;
-            specCtx.clearRect(0, 0, w, h);
-            
-            const barWidth = (w / specBars.length);
-            spectrumExcitePulse *= 0.95; // Smoothly decay the overall excitement
+        function drawPulse() {
+            const w = pulseCanvas.width;
+            const h = pulseCanvas.height;
+            pulseCtx.clearRect(0, 0, w, h);
 
-            specBars.forEach((bar, i) => {
-                // Determine a base noise level (higher if there are active signals)
-                const baseNoiseLevel = signalCount > 0 ? (2 + Math.random() * 8) : (1 + Math.random() * 3);
-                
-                // If there's an active pulse, randomly spike some bars
-                let spike = 0;
-                if (spectrumExcitePulse > 0.1 && Math.random() > 0.8) {
-                    spike = Math.random() * 60 * spectrumExcitePulse * (avgScore > 0 ? avgScore/50 : 1);
+            pulsePhase += 0.08;
+            const timeSinceBeat = (performance.now() - lastBeatTime) / 1000;
+            
+            // Generate EKG-style waveform
+            let val = 0;
+            const beatCycle = (pulsePhase % 6.28);
+            
+            if (pulseBeatStrength > 0.01) {
+                // QRS complex (sharp spike)
+                if (beatCycle < 0.3) {
+                    val = Math.sin(beatCycle * 20) * 0.3 * pulseBeatStrength;
+                } else if (beatCycle < 0.6) {
+                    val = -Math.sin((beatCycle - 0.3) * 10) * 0.8 * pulseBeatStrength;
+                } else if (beatCycle < 1.0) {
+                    val = Math.sin((beatCycle - 0.6) * 8) * 1.0 * pulseBeatStrength;
+                } else if (beatCycle < 1.3) {
+                    val = -Math.sin((beatCycle - 1.0) * 10) * 0.4 * pulseBeatStrength;
+                } else if (beatCycle < 2.5) {
+                    // T-wave
+                    val = Math.sin((beatCycle - 1.3) * 2.6) * 0.25 * pulseBeatStrength;
                 }
-
-                bar.target = baseNoiseLevel + spike;
-                
-                // Spring physics to make the bar smoothly go up and down (60 FPS)
-                bar.val += (bar.target - bar.val) * 0.15;
-                
-                let barH = Math.min(Math.max(bar.val, 1), h - 2);
-                let x = i * barWidth;
-                let y = h - barH;
-                
-                // Color mapping
-                let intensityP = barH / h;
-                if (intensityP > 0.6) specCtx.fillStyle = '#00ffff';
-                else if (intensityP > 0.3) specCtx.fillStyle = '#00ff88';
-                else specCtx.fillStyle = '#1a331a';
-
-                specCtx.fillRect(x + 1, y, barWidth - 2, barH);
-            });
-            requestAnimationFrame(drawSpectrum);
-        }
-
-        // ------------------
-        // DRIFT SURFACE
-        // ------------------
-        const driftCanvas = document.getElementById('drift-canvas');
-        const driftCtx = driftCanvas.getContext('2d');
-        const driftData = Array(100).fill(0); // More points for smoother line
-        let driftPhase = 0;
-        let currentPingFactor = 0.5;
-        let currentScoreFactor = 0.5;
-
-        // Called every 2 seconds by updateUI
-        function updateDrift(score, ping) {
-            // Set the target factors for the current 2-second window
-            currentScoreFactor = score > 0 ? score / 50 : 0.5;
-            currentPingFactor = ping > 0 ? ping / 200 : 0.5;
-        }
-
-        function drawDrift() {
-            const w = driftCanvas.width;
-            const h = driftCanvas.height;
-            driftCtx.clearRect(0, 0, w, h);
-            
-            // Advance phase continuously every frame (60 FPS)
-            driftPhase += 0.05 + (currentPingFactor * 0.05); 
-            
-            // Generate a *new* value every frame smoothly
-            let randomNoise = (Math.random() - 0.5) * currentPingFactor * 20;
-            let sineBase = Math.sin(driftPhase) * 30 * currentScoreFactor;
-            let val = sineBase + randomNoise;
-
-            driftData.push(val);
-            driftData.shift(); // keep array size constant
-            
-            driftCtx.beginPath();
-            const step = w / (driftData.length - 1);
-            
-            for(let i = 0; i < driftData.length; i++) {
-                // Normalize the value to fit nicely in canvas height
-                let normVal = (driftData[i] + 50) / 100; 
-                normVal = Math.max(0.05, Math.min(0.95, normVal)); // clamp
-                let x = i * step;
-                let y = h - (normVal * h);
-                if (i === 0) driftCtx.moveTo(x, y);
-                else driftCtx.lineTo(x, y);
             }
             
-            driftCtx.strokeStyle = '#ff9900';
-            driftCtx.lineWidth = 1.5;
-            driftCtx.stroke();
+            // Add subtle noise
+            val += (Math.random() - 0.5) * 0.03;
             
-            // Glow
-            driftCtx.shadowBlur = 10;
-            driftCtx.shadowColor = "rgba(255,153,0,0.5)";
-            driftCtx.stroke();
-            driftCtx.shadowBlur = 0;
+            // Decay beat strength over time
+            if (timeSinceBeat > 3) {
+                pulseBeatStrength *= 0.995;
+            }
 
-            requestAnimationFrame(drawDrift);
+            pulseData.push(val);
+            pulseData.shift();
+
+            // Draw grid lines
+            pulseCtx.strokeStyle = '#0a1a0a';
+            pulseCtx.lineWidth = 0.5;
+            for (let gy = 0; gy < h; gy += 20) {
+                pulseCtx.beginPath();
+                pulseCtx.moveTo(0, gy);
+                pulseCtx.lineTo(w, gy);
+                pulseCtx.stroke();
+            }
+            for (let gx = 0; gx < w; gx += 20) {
+                pulseCtx.beginPath();
+                pulseCtx.moveTo(gx, 0);
+                pulseCtx.lineTo(gx, h);
+                pulseCtx.stroke();
+            }
+
+            // Draw EKG line
+            pulseCtx.beginPath();
+            const step = w / (pulseData.length - 1);
+            const midY = h / 2;
+            
+            for (let i = 0; i < pulseData.length; i++) {
+                const x = i * step;
+                const y = midY - (pulseData[i] * h * 0.4);
+                if (i === 0) pulseCtx.moveTo(x, y);
+                else pulseCtx.lineTo(x, y);
+            }
+
+            // Glow effect
+            pulseCtx.shadowBlur = 8;
+            pulseCtx.shadowColor = pulseBeatStrength > 0.1 ? 'rgba(0,255,136,0.8)' : 'rgba(0,255,0,0.3)';
+            pulseCtx.strokeStyle = pulseBeatStrength > 0.1 ? '#00ff88' : '#005500';
+            pulseCtx.lineWidth = pulseBeatStrength > 0.1 ? 2 : 1;
+            pulseCtx.stroke();
+            pulseCtx.shadowBlur = 0;
+
+            // Draw scan marker at the leading edge
+            const tipX = (pulseData.length - 1) * step;
+            const tipY = midY - (pulseData[pulseData.length - 1] * h * 0.4);
+            pulseCtx.beginPath();
+            pulseCtx.arc(tipX, tipY, 3, 0, Math.PI * 2);
+            pulseCtx.fillStyle = '#00ffff';
+            pulseCtx.shadowBlur = 12;
+            pulseCtx.shadowColor = '#00ffff';
+            pulseCtx.fill();
+            pulseCtx.shadowBlur = 0;
+
+            requestAnimationFrame(drawPulse);
         }
 
         // ------------------
@@ -661,8 +701,7 @@
         // Init Canvases & Animation Loops
         setTimeout(() => {
             resizeCanvas();
-            requestAnimationFrame(drawSpectrum);
-            requestAnimationFrame(drawDrift);
+            requestAnimationFrame(drawPulse);
             requestAnimationFrame(tweenNumbers);
         }, 500);
 

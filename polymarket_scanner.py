@@ -252,6 +252,8 @@ class GlobalState:
     log_buffer: List[str] = []   # Last 50 log lines for Runtime Console
 
 BRAIN_LEARNING = False  # Global flag for frontend Singularity animation
+LAST_DECISIONS = []     # Recent APPROVED/REJECTED decisions for UI
+SCAN_SUMMARY = {'total': 0, 'passed': 0, 'rejected_reasons': {}}  # Per-scan summary
 WEB_STATE = GlobalState()
 WS_CLIENTS: List[WebSocket] = []
 
@@ -335,7 +337,9 @@ async def get_state():
         "top_scans": scans_out,
         "equity_curve": get_historical_equity_curve(),
         "brain_learning": BRAIN_LEARNING,
-        "max_positions": CFG.get('MAX_POSITIONS', 8)
+        "max_positions": CFG.get('MAX_POSITIONS', 8),
+        "last_decisions": LAST_DECISIONS[-20:],
+        "scan_summary": SCAN_SUMMARY,
     }
 
 @app.get("/api/debug")
@@ -1610,9 +1614,32 @@ async def main():
                     and (r['days'] is not None and 0.02 <= r['days'] <= CFG.get('MAX_DAYS_TO_EXPIRY', 2.0))
                 ]
                 
-                # HEARTBEAT: Show user that bot is working even if no candidates found
-                if scans % 1 == 0:
-                    log.info(f"[SCAN #{scans}] Checked {len(raw)} markets | {len(pre_candidates)} candidates passed filters.")
+                # ── SCAN SUMMARY with rejection reasons ────
+                SCAN_SUMMARY['total'] = len(results)
+                SCAN_SUMMARY['passed'] = len(pre_candidates)
+                rejection_reasons = {}
+                for r in results:
+                    if not r.get('is_auto'):
+                        rejection_reasons['no_signal'] = rejection_reasons.get('no_signal', 0) + 1
+                    elif r['id'] in already_opened:
+                        rejection_reasons['already_traded'] = rejection_reasons.get('already_traded', 0) + 1
+                    elif r['id'] in rejected_cache:
+                        rejection_reasons['recently_rejected'] = rejection_reasons.get('recently_rejected', 0) + 1
+                    elif r.get('entry_price', 1.0) > CFG.get('MAX_ENTRY_PRICE', 0.85):
+                        rejection_reasons['price_too_high'] = rejection_reasons.get('price_too_high', 0) + 1
+                    elif r.get('entry_price', 0.0) < CFG.get('MIN_ENTRY_PRICE', 0.08):
+                        rejection_reasons['price_too_low'] = rejection_reasons.get('price_too_low', 0) + 1
+                    elif r.get('spread_pct', 100) > 8.0:
+                        rejection_reasons['spread_wide'] = rejection_reasons.get('spread_wide', 0) + 1
+                    elif r.get('volume_24h', 0) < CFG.get('MIN_VOLUME_24H', 1000):
+                        rejection_reasons['low_volume'] = rejection_reasons.get('low_volume', 0) + 1
+                    elif r['liquidity'] < CFG['MIN_LIQUIDITY']:
+                        rejection_reasons['low_liquidity'] = rejection_reasons.get('low_liquidity', 0) + 1
+                SCAN_SUMMARY['rejected_reasons'] = rejection_reasons
+                
+                # HEARTBEAT LOG
+                reasons_str = ' | '.join([f"{k}:{v}" for k, v in rejection_reasons.items()]) if rejection_reasons else 'all filtered'
+                log.info(f"[SCAN #{scans}] {len(raw)} markets → {len(results)} valid → {len(pre_candidates)} candidates | Rejected: {reasons_str}")
 
                 # ── DEEP ANALYSIS: verify with external data ────
                 auto_candidates = []
@@ -1633,9 +1660,18 @@ async def main():
 
                             if _should_trade and _score_pass:
                                 auto_candidates.append(candidate)
-                                log.info(f"[BRAIN] APPROVED: {candidate['question'][:50]} | "
+                                log.info(f"[BRAIN] ✅ APPROVED: {candidate['question'][:50]} | "
                                          f"Score:{_brain_score:.0f} (>= {_min_conf}) | "
                                          f"Gates:{analysis['gates_passed']}")
+                                LAST_DECISIONS.append({
+                                    'ts': datetime.now().strftime('%H:%M:%S'),
+                                    'type': 'APPROVED',
+                                    'question': candidate['question'][:60],
+                                    'score': round(_brain_score, 1),
+                                    'gates': analysis.get('gates_passed', '?'),
+                                    'price': round(candidate.get('entry_price', 0), 3),
+                                })
+                                if len(LAST_DECISIONS) > 50: LAST_DECISIONS.pop(0)
                             else:
                                 rejected_cache[candidate['id']] = time.time()
                                 reason = []
@@ -1643,9 +1679,19 @@ async def main():
                                 if not _score_pass: reason.append(f"Score < {_min_conf}")
                                 reason_str = " & ".join(reason) if reason else "Unknown"
                                 
-                                log.info(f"[BRAIN] REJECTED: {candidate['question'][:50]} | "
+                                log.info(f"[BRAIN] ❌ REJECTED: {candidate['question'][:50]} | "
                                          f"Score:{_brain_score:.0f} | "
                                          f"Gates:{analysis['gates_passed']} | Reason: {reason_str}")
+                                LAST_DECISIONS.append({
+                                    'ts': datetime.now().strftime('%H:%M:%S'),
+                                    'type': 'REJECTED',
+                                    'question': candidate['question'][:60],
+                                    'score': round(_brain_score, 1),
+                                    'gates': analysis.get('gates_passed', '?'),
+                                    'reason': reason_str,
+                                    'price': round(candidate.get('entry_price', 0), 3),
+                                })
+                                if len(LAST_DECISIONS) > 50: LAST_DECISIONS.pop(0)
                         except Exception as e:
                             log.debug(f'[BRAIN] Analysis error: {e}')
                 
