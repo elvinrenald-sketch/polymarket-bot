@@ -1497,11 +1497,17 @@ async def main():
         log.info("[BRAIN] 🚀 REGENERATING BRAIN (applying VOID learning & 60% authority)...")
         brain.train()
 
+    storage_type = "VOLUME (Persistent)" if JOURNAL_DIR.startswith('/data') else "EPHEMERAL (Temporary - Data will be lost on restart)"
+    
     banner()
     log.info('=' * 60)
     log.info('  POLYMARKET AUTO BOT v15.0 (NEWS INTELLIGENCE)')
     log.info('=' * 60)
     log.info(f'  Storage : {storage_type}')
+    if "/data" in JOURNAL_DIR:
+        log.info(f'  STATUS  : ✅ VOLUME DETECTED (Data is safe)')
+    else:
+        log.info(f'  STATUS  : ⚠️  NO VOLUME MOUNTED (Data will be lost)')
     log.info(f'  Journal : {JOURNAL_DIR}')
     log.info(f'  Database: {DB_PATH}')
     log.info(f'  History : {closed_count} closed trades | P&L: ${total_pnl:+.2f}')

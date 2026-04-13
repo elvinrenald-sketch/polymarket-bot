@@ -531,27 +531,14 @@
         setInterval(renderDonut, 50);
 
         // ------------------
-        // NEURAL HEART 3D
+        // NEURAL RADAR (Scanner Activity)
         // ------------------
         const pulseCanvas = document.getElementById('pulse-canvas');
         const pulseCtx = pulseCanvas.getContext('2d');
         let pulseBeatStrength = 0;
         let lastBeatTime = 0;
-        let rotationAngle = 0;
-
-        // Generate points for 3D heart
-        const heartPoints = [];
-        for (let i = 0; i < 2000; i++) {
-            const t = Math.random() * Math.PI * 2;
-            const p = Math.random() * Math.PI * 2;
-            
-            // Heart formula (3D)
-            const x = 16 * Math.pow(Math.sin(t), 3);
-            const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
-            const z = Math.sin(p) * Math.abs(x) * 0.5; // Give it depth
-            
-            heartPoints.push({x: x * 0.1, y: -y * 0.1, z: z * 0.1});
-        }
+        let sweepAngle = 0;
+        const blips = []; // Active pulses/signals found
 
         function resizeCanvas() {
             if(!pulseCanvas.parentElement) return;
@@ -561,72 +548,102 @@
         }
         window.addEventListener('resize', resizeCanvas);
 
-        function pulseBeat(signalStrength) {
-            pulseBeatStrength = Math.min(2.5, signalStrength * 0.5);
+        function pulseBeat(signalCount) {
+            pulseBeatStrength = Math.min(2.0, signalCount * 0.2);
             lastBeatTime = performance.now();
+            
+            // Add blips on radar when signals found
+            for(let i=0; i<Math.min(signalCount, 5); i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 30 + Math.random() * 60;
+                blips.push({
+                    x: Math.cos(angle) * dist,
+                    y: Math.sin(angle) * dist,
+                    life: 1.0,
+                    size: 2 + Math.random() * 3
+                });
+            }
         }
 
         function drawPulse() {
             const w = pulseCanvas.width;
             const h = pulseCanvas.height;
-            pulseCtx.fillStyle = 'rgba(0, 5, 0, 0.2)'; // Tail effect
+            const cx = w / 2;
+            const cy = h / 2;
+            const radius = Math.min(w, h) * 0.45;
+
+            // Fading background for trails
+            pulseCtx.fillStyle = 'rgba(5, 10, 5, 0.15)';
             pulseCtx.fillRect(0, 0, w, h);
 
-            const time = performance.now() * 0.001;
             const timeSinceBeat = (performance.now() - lastBeatTime) / 1000;
-            
-            // Pulsing logic
-            let beatScale = 1.0;
-            if (timeSinceBeat < 0.5) {
-                // Double thump heartbeat effect
-                const p = timeSinceBeat / 0.5;
-                beatScale += Math.sin(p * Math.PI * 2) * 0.2 * pulseBeatStrength;
-            } else {
-                pulseBeatStrength *= 0.99;
-                beatScale += Math.sin(time * 3) * 0.05; // Resting pulse
+            sweepAngle += 0.05 + (pulseBeatStrength * 0.1); 
+            if (timeSinceBeat > 2) pulseBeatStrength *= 0.98;
+
+            // Draw Radar Circles
+            pulseCtx.strokeStyle = '#0a220a';
+            pulseCtx.lineWidth = 1;
+            for(let i=1; i<=3; i++) {
+                pulseCtx.beginPath();
+                pulseCtx.arc(cx, cy, (radius/3)*i, 0, Math.PI*2);
+                pulseCtx.stroke();
             }
 
-            rotationAngle += 0.02 + (pulseBeatStrength * 0.05);
+            // Draw Crosshair
+            pulseCtx.beginPath();
+            pulseCtx.moveTo(cx - radius, cy); pulseCtx.lineTo(cx + radius, cy);
+            pulseCtx.moveTo(cx, cy - radius); pulseCtx.lineTo(cx, cy + radius);
+            pulseCtx.stroke();
 
-            const centerX = w / 2;
-            const centerY = h / 2;
-            const scale = Math.min(w, h) * 0.35 * beatScale;
-
-            pulseCtx.fillStyle = '#ff3366';
+            // Draw Sweep Line
+            const sx = cx + Math.cos(sweepAngle) * radius;
+            const sy = cy + Math.sin(sweepAngle) * radius;
             
-            for (let i = 0; i < heartPoints.length; i++) {
-                const pt = heartPoints[i];
-                
-                // Rotate around Y
-                const rx = pt.x * Math.cos(rotationAngle) - pt.z * Math.sin(rotationAngle);
-                const rz = pt.x * Math.sin(rotationAngle) + pt.z * Math.cos(rotationAngle);
-                
-                // Project 3D to 2D
-                const persp = 3 / (rz + 4);
-                const x2d = centerX + rx * scale * persp;
-                const y2d = centerY + pt.y * scale * persp;
-                
-                // Brightness based on depth
-                const alpha = Math.max(0.1, Math.min(1.0, (rz + 2) / 4));
-                const brightness = Math.floor(alpha * 255);
-                
-                pulseCtx.fillStyle = `rgba(255, ${30 + brightness * 0.2}, ${60 + brightness * 0.4}, ${alpha})`;
-                
-                // Pulse color shift
-                if (pulseBeatStrength > 0.5 && timeSinceBeat < 0.2) {
-                    pulseCtx.fillStyle = '#00ffff'; // Electric pulse on signal
-                }
+            const grad = pulseCtx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+            grad.addColorStop(0, 'rgba(0, 255, 136, 0)');
+            grad.addColorStop(1, 'rgba(0, 255, 136, 0.2)');
 
-                pulseCtx.fillRect(x2d, y2d, 1.5, 1.5);
-            }
+            pulseCtx.beginPath();
+            pulseCtx.moveTo(cx, cy);
+            pulseCtx.arc(cx, cy, radius, sweepAngle - 0.2, sweepAngle);
+            pulseCtx.lineTo(cx, cy);
+            pulseCtx.fillStyle = grad;
+            pulseCtx.fill();
 
-            // Glow 
-            if (pulseBeatStrength > 0.5 && timeSinceBeat < 0.2) {
-                pulseCtx.shadowBlur = 15;
+            pulseCtx.strokeStyle = '#00ff88';
+            pulseCtx.lineWidth = 2;
+            pulseCtx.beginPath();
+            pulseCtx.moveTo(cx, cy);
+            pulseCtx.lineTo(sx, sy);
+            pulseCtx.stroke();
+
+            // Draw Blips
+            for (let i = blips.length - 1; i >= 0; i--) {
+                const b = blips[i];
+                const bx = cx + b.x;
+                const by = cy + b.y;
+                
+                pulseCtx.fillStyle = `rgba(0, 255, 255, ${b.life})`;
+                pulseCtx.beginPath();
+                pulseCtx.arc(bx, by, b.size, 0, Math.PI*2);
+                pulseCtx.fill();
+                
+                // Glow
+                pulseCtx.shadowBlur = 10 * b.life;
                 pulseCtx.shadowColor = '#00ffff';
-            } else {
+                pulseCtx.stroke();
                 pulseCtx.shadowBlur = 0;
+
+                b.life -= 0.01;
+                if (b.life <= 0) blips.splice(i, 1);
             }
+
+            // Central Core
+            const corePulse = 5 + Math.sin(performance.now()*0.01)*2 + (pulseBeatStrength*5);
+            pulseCtx.fillStyle = pulseBeatStrength > 0.5 ? '#00ffff' : '#00ff88';
+            pulseCtx.beginPath();
+            pulseCtx.arc(cx, cy, corePulse, 0, Math.PI*2);
+            pulseCtx.fill();
 
             requestAnimationFrame(drawPulse);
         }
