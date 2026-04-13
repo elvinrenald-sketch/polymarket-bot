@@ -245,6 +245,7 @@ class GlobalState:
     stats: Dict[str, Any] = {'closed_trades': 0, 'realized_pnl': 0, 'win_rate': 0.0}
     positions: List[Dict[str, Any]] = []
     top_scans: List[Dict[str, Any]] = []
+    log_buffer: List[str] = []   # Last 50 log lines for Runtime Console
 
 BRAIN_LEARNING = False  # Global flag for frontend Singularity animation
 WEB_STATE = GlobalState()
@@ -252,15 +253,15 @@ WS_CLIENTS: List[WebSocket] = []
 
 class WebSocketLogHandler(logging.Handler):
     def emit(self, record):
+        msg = self.format(record)
+        # Store in buffer so Runtime Console can replay on reconnect
+        WEB_STATE.log_buffer.append(msg)
+        if len(WEB_STATE.log_buffer) > 50:
+            WEB_STATE.log_buffer = WEB_STATE.log_buffer[-50:]
         if not WS_CLIENTS:
             return
-        msg = self.format(record)
-        # Avoid blocking asyncio loops by pushing to a queue or sending directly if threadsafe.
-        # Simple fire-and-forget for now, handled safely in async contexts.
         for ws in WS_CLIENTS:
             try:
-                # We can only await in an async function. Since logging might be sync,
-                # we push it to the running loop if we are in one.
                 loop = asyncio.get_running_loop()
                 loop.create_task(ws.send_text(msg))
             except Exception:
@@ -378,11 +379,18 @@ async def websocket_logs(websocket: WebSocket):
     await websocket.accept()
     WS_CLIENTS.append(websocket)
     try:
+        # Immediately replay buffered log history so Runtime Console loads on first connect
+        for buffered_msg in WEB_STATE.log_buffer[-50:]:
+            try:
+                await websocket.send_text(buffered_msg)
+            except Exception:
+                break
         while True:
             # Keep connection alive
             await websocket.receive_text()
     except WebSocketDisconnect:
-        WS_CLIENTS.remove(websocket)
+        if websocket in WS_CLIENTS:
+            WS_CLIENTS.remove(websocket)
 
 WEB_TRIGGER_CLOSE_ALL = False
 WEB_TRIGGER_CLOSE_POS_IDS = set()
@@ -1622,11 +1630,12 @@ async def main():
                     and r['id'] not in already_opened
                     and r.get('question', '').strip() not in already_opened_questions
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
-                    and r.get('entry_price', 1.0) <= CFG.get('MAX_ENTRY_PRICE', 0.73)
-                    and r.get('entry_price', 0.0) >= CFG.get('MIN_ENTRY_PRICE', 0.40)
+                    and r.get('entry_price', 1.0) <= CFG.get('MAX_ENTRY_PRICE', 0.85)
+                    and r.get('entry_price', 0.0) >= CFG.get('MIN_ENTRY_PRICE', 0.08)
                     and r.get('spread_pct', 100) <= 8.0
                     and (r['days'] is None or r['days'] >= 0.02)
                 ]
+                log.info(f"[SCAN #{scans}] {len(results)} markets | {len(pre_candidates)} candidates passed pre-filter")
 
                 # ── DEEP ANALYSIS: verify with external data ────
                 auto_candidates = []
