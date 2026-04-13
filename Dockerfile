@@ -14,7 +14,5 @@ COPY templates/ ./templates/
 # This path will be mounted to a Railway Volume
 RUN mkdir -p /data/journal
 
-# Health check: ensure Python works
-RUN python3 -c "import intelligence; print('Import OK')"
-
+# Startup
 CMD ["python3", "-u", "polymarket_scanner.py"]
