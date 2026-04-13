@@ -116,9 +116,10 @@ CFG = {
     'STATS_RESET_ID'      : 82,
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
-    'MAX_BET'             : 5.00,
-    'MAX_POSITIONS'       : 8,         # 8 slots (was 5) → more parallel trades = faster data
-    'MAX_EXPOSURE_PCT'    : 0.70,      # 70% exposure allowed (was 50%) → room for 8 slots
+    'MAX_BET'             : 1.00,      # Fixed size for training mining
+    'MAX_POSITIONS'       : 10,        # 10 slots
+    'MAX_EXPOSURE_PCT'    : 0.90,      # 90% exposure allowed
+
 
     # Auto-Close — faster turnover for data mining
     'TAKE_PROFIT_PCT'     : 35.0,
@@ -1294,6 +1295,8 @@ class PositionManager:
                 should_close = True; close_reason = f'TAKE_PROFIT (+{price_change_pct:.1f}%)'
             elif price_change_pct <= -CFG['STOP_LOSS_PCT']:
                 should_close = True; close_reason = f'STOP_LOSS ({price_change_pct:.1f}%)'
+            elif hold_hours >= (20.0 / 60.0) and abs(price_change_pct) < 2.0:
+                should_close = True; close_reason = f'STAGNANT ({hold_hours*60:.0f}m, dPx {price_change_pct:.1f}%)'
             elif hold_hours >= CFG['MAX_HOLD_HOURS']:
                 should_close = True; close_reason = f'MAX_HOLD ({hold_hours:.0f}h)'
             elif current_price >= CFG.get('LIQUIDITY_TRAP_PRICE', 0.90):
@@ -1336,30 +1339,8 @@ class PositionManager:
 
     @staticmethod
     def _get_bet_size(equity: float) -> float:
-        """Tiered position sizing based on equity level.
-        
-        Equity Tiers:
-            < $25   → $1.00
-            < $50   → $1.80
-            < $100  → $3.00
-            < $150  → $3.50
-            < $200  → $5.00
-            ≥ $200  → $5.00 + $2.50 for every $60 above $200
-        """
-        if equity < 25:
-            return 1.00
-        elif equity < 50:
-            return 1.80
-        elif equity < 100:
-            return 3.00
-        elif equity < 150:
-            return 3.50
-        elif equity < 200:
-            return 5.00
-        else:
-            # Above $200: base $5 + $2.50 per $60 increment
-            extra_tiers = (equity - 200) / 60
-            return round(5.00 + extra_tiers * 2.50, 2)
+        """Fixed position sizing for Training Mode ($1 flat)."""
+        return 1.00
 
     def _calculate_equity(self) -> float:
         """Calculate current equity = bankroll + total realized PnL."""
