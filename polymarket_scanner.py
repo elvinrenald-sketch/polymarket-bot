@@ -474,6 +474,19 @@ def init_db():
     # Run one-time migration to fix old data
     _migrate_void_trades()
     _cleanup_duplicate_trades()
+    _reset_circuit_breaker()
+
+def _reset_circuit_breaker():
+    """One-time migration to clear the CURRENT cooldown lock by aging past losses."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        # Set old loss timestamps to yesterday so the 15-minute cooldown instantly expires
+        cur.execute("UPDATE positions SET close_ts = '2024-01-01 00:00:00' WHERE status='CLOSED' AND result='LOSS'")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 def _migrate_void_trades():
     """One-time migration: convert old LOSS trades with P&L ~$0 to VOID.
