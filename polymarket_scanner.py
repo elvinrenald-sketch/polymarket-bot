@@ -124,7 +124,7 @@ CFG = {
 
     # Auto-Close — faster turnover for data mining
     'TAKE_PROFIT_PCT'     : 35.0,
-    'STOP_LOSS_PCT'       : 10.0,
+    'STOP_LOSS_PCT'       : 20.0,
     'TIME_EXIT_MINUTES'   : 45,
     'FORCE_EXIT_MINUTES'  : 3,
     'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48) → faster cycling
