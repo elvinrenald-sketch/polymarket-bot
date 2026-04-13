@@ -105,9 +105,9 @@ CFG = {
     'CLOB_API'            : 'https://clob.polymarket.com',
 
     # Scanner
-    'SCAN_INTERVAL'       : 5,
+    'SCAN_INTERVAL'       : 15,      # Polling interval (was 5). Reduced to prevent Cloudflare ban!
     'MARKETS_PER_PAGE'    : 100,
-    'MAX_PAGES'           : 15,
+    'MAX_PAGES'           : 5,       # Max pages to fetch (was 15). Only need top 500 markets.
     'DISPLAY_TOP'         : 10,
     'CLEAR_SCREEN'        : False,   # Railway tidak punya terminal
 
@@ -855,7 +855,7 @@ async def telegram_listener(session, pm):
 async def api_get(session, url, params=None):
     try:
         async with session.get(url, params=params,
-                               timeout=aiohttp.ClientTimeout(total=12)) as r:
+                               timeout=aiohttp.ClientTimeout(total=45)) as r:
             if r.status == 200:
                 return await r.json(content_type=None)
     except Exception:
@@ -901,7 +901,7 @@ async def fetch_clob_batch(session, token_ids: List[str]) -> Dict[str, dict]:
     async def post_batch(url, batch):
         try:
             async with session.post(url, json=[{"token_id": str(t)} for t in batch], 
-                                    timeout=aiohttp.ClientTimeout(total=12)) as r:
+                                    timeout=aiohttp.ClientTimeout(total=30)) as r:
                 if r.status == 200:
                     return await r.json()
         except Exception:
@@ -1681,7 +1681,7 @@ async def main():
                         async with session.post(
                             f"{CFG['CLOB_API']}/midpoints",
                             json=[{"token_id": str(t)} for t in tids_main],
-                            timeout=aiohttp.ClientTimeout(total=8)
+                            timeout=aiohttp.ClientTimeout(total=20)
                         ) as resp:
                             if resp.status == 200:
                                 raw_p = await resp.json()
