@@ -126,15 +126,15 @@ CFG = {
     'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
     'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
     'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
-    'MIN_ML_CONFIDENCE'   : 58.0,      # Brain score minimum (VERY picky!)
+    'MIN_ML_CONFIDENCE'   : 48.0,      # Give the ML room to explore (was 58.0)
     'MAX_ENTRY_PRICE'     : 0.73,      # Never buy above $0.73
-    'MIN_ENTRY_PRICE'     : 0.40,      # NEVER buy below $0.40 (Avoid underdog traps)
+    'MIN_ENTRY_PRICE'     : 0.30,      # Avoid absolute traps, but accept reasonable risks (was 0.40)
     'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto-exit if price >$0.90 (illiquid zone)
 
     # Signal filters (Brain does the real filtering)
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE'],
-    'MIN_MOMENTUM'        : 15.0,      # Only strong momentum trends
-    'MIN_LIQUIDITY'       : 3000,      # Avoid illiquid markets
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY'], # Added 'BUY' back to triggers
+    'MIN_MOMENTUM'        : 10.0,      # Accept moderate trends (was 15.0)
+    'MIN_LIQUIDITY'       : 2000,      # Slightly lower liquidity floor (was 3000)
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
