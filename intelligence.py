@@ -812,8 +812,9 @@ class ModelManager:
                 log.info(f"[ML] Collecting data: {len(df)}/{self.min_samples}")
                 return False
 
-            if len(df) == self.last_count:
-                return False
+            # Force training on first run even if count is same to apply new logic
+            # if len(df) == self.last_count:
+            #     return False
 
             rows = []
             close_times = []

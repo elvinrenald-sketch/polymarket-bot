@@ -1205,8 +1205,10 @@ class PositionManager:
             )
             rows = cur.fetchall()
             conn.close()
-            if len(rows) < 3:
-                return None  # Not enough data
+            # Force training on first run even if count is same to apply new logic
+            if len(df) == self.last_count and self.last_count > 0:
+                log.info(f"!!! [ML] BRAIN IS UP TO DATE ({self.last_count} samples) !!!")
+                return None
             # Check if all 3 are LOSS
             if all(r[0] == 'LOSS' for r in rows):
                 # Check time since last loss
@@ -1487,7 +1489,7 @@ async def main():
     if TradingBrain:
         brain = TradingBrain(DB_PATH, MODEL_PATH)
         # Force initial training to absorb updated logic (VOID learning, etc)
-        log.info("[BRAIN] Triggering initial training session...")
+        log.info("[BRAIN] 🚀 REGENERATING BRAIN (applying VOID learning & 60% authority)...")
         brain.train()
 
     banner()
