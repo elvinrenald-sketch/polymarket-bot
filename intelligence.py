@@ -790,15 +790,19 @@ class ModelManager:
                 log.error(f"[ML] Save failed: {e}")
 
     def train(self, db_path: str) -> bool:
-        """Train model on historical closed trades."""
+        """Train model on historical closed trades.
+        UPGRADED: Now learns from VOID/STAGNANT trades (treated as LOSS).
+        Recent trades are weighted 3x heavier (recency bias).
+        """
         if not HAS_SKLEARN or not HAS_PANDAS:
             return False
 
         try:
             conn = sqlite3.connect(db_path)
+            # UPGRADE: Include VOID and STAGNANT as training data (= LOSS)
             df = pd.read_sql_query(
-                "SELECT features_json, result FROM positions "
-                "WHERE status='CLOSED' AND result IN ('WIN','LOSS') "
+                "SELECT features_json, result, close_ts FROM positions "
+                "WHERE status='CLOSED' AND result IN ('WIN','LOSS','VOID','STAGNANT') "
                 "AND features_json IS NOT NULL AND features_json != ''",
                 conn
             )
@@ -812,14 +816,17 @@ class ModelManager:
                 return False
 
             rows = []
+            close_times = []
             for _, row in df.iterrows():
                 try:
                     data = json.loads(row['features_json'])
                     feat = {}
                     for fn in self.feature_names:
                         feat[fn] = float(data.get(fn, 0))
+                    # WIN = 1, everything else (LOSS, VOID, STAGNANT) = 0
                     feat['target'] = 1 if row['result'] == 'WIN' else 0
                     rows.append(feat)
+                    close_times.append(row.get('close_ts', ''))
                 except Exception:
                     continue
 
@@ -830,33 +837,52 @@ class ModelManager:
             X = train_df[self.feature_names].values
             y = train_df['target'].values
 
+            # UPGRADE: Recency bias — recent trades weighted 3x heavier
+            now = datetime.now()
+            sample_weights = []
+            for ct in close_times:
+                try:
+                    ct_dt = datetime.strptime(str(ct)[:19], '%Y-%m-%d %H:%M:%S')
+                    hours_ago = (now - ct_dt).total_seconds() / 3600
+                    if hours_ago < 6:       # Last 6 hours: 3x weight
+                        sample_weights.append(3.0)
+                    elif hours_ago < 24:    # Last 24 hours: 2x weight
+                        sample_weights.append(2.0)
+                    else:                   # Older: 1x weight
+                        sample_weights.append(1.0)
+                except Exception:
+                    sample_weights.append(1.0)
+
             self.scaler = StandardScaler()
             X_scaled = self.scaler.fit_transform(X)
 
             self.model = GradientBoostingClassifier(
-                n_estimators=80,
-                max_depth=3,
-                learning_rate=0.1,
-                min_samples_split=4,
+                n_estimators=100,
+                max_depth=4,
+                learning_rate=0.08,
+                min_samples_split=3,
                 min_samples_leaf=2,
                 subsample=0.85,
                 random_state=42,
             )
-            self.model.fit(X_scaled, y)
+            self.model.fit(X_scaled, y, sample_weight=sample_weights)
 
+            wins = sum(y)
+            losses = len(y) - wins
             if len(rows) >= 15:
                 cv = cross_val_score(self.model, X_scaled, y,
                                      cv=min(5, len(rows) // 4))
-                log.info(f"[ML] Trained: {len(rows)} samples | "
+                log.info(f"[ML] 🧠 TRAINED: {len(rows)} samples "
+                         f"(W:{wins} L:{losses}) | "
                          f"Accuracy: {cv.mean():.1%}")
             else:
-                log.info(f"[ML] Trained: {len(rows)} samples")
+                log.info(f"[ML] 🧠 TRAINED: {len(rows)} samples (W:{wins} L:{losses})")
 
             # Log feature importance
             imp = sorted(zip(self.feature_names,
                              self.model.feature_importances_),
                          key=lambda x: x[1], reverse=True)
-            top = ', '.join(f'{n}={v:.3f}' for n, v in imp[:3])
+            top = ', '.join(f'{n}={v:.3f}' for n, v in imp[:5])
             log.info(f"[ML] Top features: {top}")
 
             self.last_count = len(rows)
@@ -1062,38 +1088,50 @@ class TradingBrain:
         # ─── Step 6: Combined brain_score ─────────────────────
         heuristic = self._heuristic_score(signal_data)
 
+        # TOXIC KEYWORD PENALTY: Markets with historically bad patterns
+        toxic_penalty = 0.0
+        q_lower = question.lower()
+        toxic_patterns = [
+            ('elon musk', 8),   ('tweets', 6),    ('tweet', 6),
+            ('post', 4),        ('posts', 4),     ('x.com', 5),
+            ('twitter', 5),     ('truth social', 5),
+        ]
+        for pattern, penalty in toxic_patterns:
+            if pattern in q_lower:
+                toxic_penalty += penalty
+        toxic_penalty = min(25, toxic_penalty)  # Max 25 point penalty
+
         if category == 'crypto' or prob.get('has_external_data'):
             # ── CRYPTO MARKETS ── (has external data)
             if has_ml:
-                # Max 100 Points = 30 ML + 30 News + 10 Heuristic + 20 External (+10 Bonus)
-                news_boost = news_sentiment * 30 if news_data.get('has_news') else 0
-                ext_boost = min(20, abs(prob.get('divergence', 0)) * 100)
+                # UPGRADED: 60 ML + 20 News + 10 Heuristic + 10 External
+                news_boost = news_sentiment * 20 if news_data.get('has_news') else 0
+                ext_boost = min(10, abs(prob.get('divergence', 0)) * 50)
                 brain_score = (
-                    ml_pred * 100 * 0.30 +
+                    ml_pred * 100 * 0.60 +
                     heuristic * 0.10 +
                     news_boost +
-                    ext_boost +
-                    (10 if prob.get('has_external_data') else 0)
+                    ext_boost
                 )
             else:
-                # No ML model -> Max 100 Points = 35 News + 20 Heuristic + 35 External (+10 Bonus)
+                # No ML model -> 35 News + 30 Heuristic + 25 External (+10 Bonus)
                 news_boost = news_sentiment * 35 if news_data.get('has_news') else 0
-                ext_boost = min(35, abs(prob.get('divergence', 0)) * 100)
+                ext_boost = min(25, abs(prob.get('divergence', 0)) * 100)
                 brain_score = (
-                    heuristic * 0.20 +
+                    heuristic * 0.30 +
                     news_boost +
                     ext_boost +
                     (10 if prob.get('has_external_data') else 0)
                 )
         else:
-            # ── NON-CRYPTO MARKETS ── (No external data: Politics, Sports, General)
+            # ── NON-CRYPTO MARKETS ── (No external data: Sports, Politics, General)
             if has_ml:
-                # Max 100 Points = 30 ML + 45 News + 25 Heuristic
-                news_boost = news_sentiment * 45 if news_data.get('has_news') else 0
+                # UPGRADED: 60 ML + 25 News + 15 Heuristic
+                news_boost = news_sentiment * 25 if news_data.get('has_news') else 0
                 brain_score = (
-                    ml_pred * 100 * 0.30 +
+                    ml_pred * 100 * 0.60 +
                     news_boost +
-                    heuristic * 0.25
+                    heuristic * 0.15
                 )
             else:
                 # No ML model -> 55 News + 45 Heuristic
@@ -1103,6 +1141,8 @@ class TradingBrain:
                     news_boost
                 )
 
+        # Apply toxic keyword penalty
+        brain_score -= toxic_penalty
         brain_score = round(max(0, min(100, brain_score)), 1)
 
         # ─── Step 7: Gate checks (simple — 5 gates, need 3) ──
@@ -1115,7 +1155,7 @@ class TradingBrain:
         soft_gates = {
             'liquidity_ok':  liquidity >= 1000,
             'not_toxic':     spread.get('is_viable', True),
-            'volume_ok':     volume_24h >= 300,
+            'volume_ok':     volume_24h >= 1000,
         }
 
         all_gates = {**hard_gates, **soft_gates}
@@ -1177,7 +1217,7 @@ class TradingBrain:
                 whale, 0, 0)
             ml = self.model_mgr.predict(features)
             if ml >= 0:
-                return round(ml * 100 * 0.5 + heuristic * 0.5, 1)
+                return round(ml * 100 * 0.6 + heuristic * 0.4, 1)
 
         # No ML model → pure heuristic
         return round(heuristic, 1)
