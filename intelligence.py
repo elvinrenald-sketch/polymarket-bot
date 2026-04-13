@@ -1124,11 +1124,11 @@ class TradingBrain:
         hard_pass = all(hard_gates.values())
         soft_pass = sum(1 for v in soft_gates.values() if v) >= 2
 
-        # ALL hard gates must pass + at least 2/3 soft gates + brain_score >= 40
+        # ALL hard gates must pass + at least 2/3 soft gates
+        # NOTE: brain_score threshold is checked in polymarket_scanner.py via CFG['MIN_ML_CONFIDENCE']
         should_trade = (
             hard_pass
             and soft_pass
-            and brain_score >= 40
         )
 
         # Arbitrage bypass (pure math opportunity)
