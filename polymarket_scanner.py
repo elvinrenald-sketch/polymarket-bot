@@ -16,6 +16,7 @@ FIXES:
   - Auto Close timezone FIX: fixed datetime diff calculation
 """
 
+# Polymarket Scanner - Build Trigger v15.1 (Brain Surgery Update)
 import os, sys
 
 if not os.environ.get('TERM'):
