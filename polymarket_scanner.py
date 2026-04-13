@@ -1609,6 +1609,10 @@ async def main():
                     and r.get('volume_24h', 0) >= CFG.get('MIN_VOLUME_24H', 1000)
                     and (r['days'] is not None and 0.02 <= r['days'] <= CFG.get('MAX_DAYS_TO_EXPIRY', 2.0))
                 ]
+                
+                # HEARTBEAT: Show user that bot is working even if no candidates found
+                if scans % 1 == 0:
+                    log.info(f"[SCAN #{scans}] Checked {len(raw)} markets | {len(pre_candidates)} candidates passed filters.")
 
                 # ── DEEP ANALYSIS: verify with external data ────
                 auto_candidates = []
