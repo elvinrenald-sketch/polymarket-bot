@@ -125,8 +125,10 @@ CFG = {
     'STOP_LOSS_PCT'       : 15.0,      # Stop loss at -15% (cut losses TIGHT)
     'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
     'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
-    'MAX_HOLD_HOURS'      : 48,        # Force close after 48h
-    'MIN_ML_CONFIDENCE'   : 48.0,      # Give the ML room to explore (was 58.0)
+    'MAX_HOLD_HOURS'      : 48,
+    
+    # AI & Entry Filters
+    'MIN_ML_CONFIDENCE'   : 10.0,      # Give the ML room to explore (was 58.0)
     'MAX_ENTRY_PRICE'     : 0.73,      # Never buy above $0.73
     'MIN_ENTRY_PRICE'     : 0.30,      # Avoid absolute traps, but accept reasonable risks (was 0.40)
     'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto-exit if price >$0.90 (illiquid zone)
