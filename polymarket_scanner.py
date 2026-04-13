@@ -1085,7 +1085,7 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 2.5:
+    elif abs(mom_pct) >= 3.5 and (vol >= 300 or vol_spike):
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
@@ -1295,7 +1295,7 @@ class PositionManager:
                 should_close = True; close_reason = f'TAKE_PROFIT (+{price_change_pct:.1f}%)'
             elif price_change_pct <= -CFG['STOP_LOSS_PCT']:
                 should_close = True; close_reason = f'STOP_LOSS ({price_change_pct:.1f}%)'
-            elif hold_hours >= (20.0 / 60.0) and abs(price_change_pct) < 2.0:
+            elif hold_hours >= (30.0 / 60.0) and abs(price_change_pct) < 2.0:
                 should_close = True; close_reason = f'STAGNANT ({hold_hours*60:.0f}m, dPx {price_change_pct:.1f}%)'
             elif hold_hours >= CFG['MAX_HOLD_HOURS']:
                 should_close = True; close_reason = f'MAX_HOLD ({hold_hours:.0f}h)'
