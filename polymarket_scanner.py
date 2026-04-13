@@ -1089,11 +1089,11 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
 
     elif vol_spike:
         signal = 'EDGE'; action = 'WATCH VOL'; color = YY
-        is_auto = True  # Brain will verify validation of this volume spike
+        is_auto = False  # DO NOT AUTO-BUY: Needs momentum to prove it's not a stagnant whale trap
 
     elif near_res and days is not None and days < 0.25:
         signal = 'EDGE'; action = 'WATCH TIME'; color = Y
-        is_auto = True  # Try to grab last-minute opportunities if brain affirms
+        is_auto = False  # DO NOT AUTO-BUY: Often stuck at final probabilities waiting for resolution
 
     else:
         signal = 'MONITOR'; action = 'MONITOR'; color = W
