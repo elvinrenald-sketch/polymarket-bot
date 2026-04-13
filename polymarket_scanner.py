@@ -1635,12 +1635,11 @@ async def main():
                     and r.get('spread_pct', 100) <= 8.0
                     and (r['days'] is None or r['days'] >= 0.02)
                 ]
-                log.info(f"[SCAN #{scans}] {len(results)} markets | {len(pre_candidates)} candidates passed pre-filter")
 
                 # ── DEEP ANALYSIS: verify with external data ────
                 auto_candidates = []
                 if brain and pre_candidates:
-                    for candidate in pre_candidates[:5]:
+                    for candidate in pre_candidates[:10]:
                         try:
                             analysis = await brain.analyze_signal(session, candidate)
                             candidate['brain_analysis'] = analysis
@@ -1673,10 +1672,12 @@ async def main():
                             pass
                     asyncio.create_task(_periodic_train())
 
+
                 if auto_candidates:
-                    can, _ = pm.can_open()
-                    if can:
-                        best = auto_candidates[0]
+                    for best in auto_candidates:
+                        can, _ = pm.can_open()
+                        if not can:
+                            break
                         pos_id = await pm.open_position(session, best)
                         if pos_id:
                             already_opened.add(best['id'])
