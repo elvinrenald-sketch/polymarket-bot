@@ -127,15 +127,15 @@ CFG = {
     'FORCE_EXIT_MINUTES'  : 3,
     'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48) → faster cycling
 
-    # AI & Entry Filters — TRAINING MODE
+    # AI & Entry Filters — TRAINING MODE (wide open for data mining)
     'MIN_ML_CONFIDENCE'   : 25.0,      # Per user instruction: brain minimum 25
-    'MAX_ENTRY_PRICE'     : 0.73,
-    'MIN_ENTRY_PRICE'     : 0.30,
-    'LIQUIDITY_TRAP_PRICE': 0.90,
+    'MAX_ENTRY_PRICE'     : 0.85,      # Wider range (was 0.73) → more entries
+    'MIN_ENTRY_PRICE'     : 0.08,      # Allow cheap coins too (was 0.30) → catches $0.12, $0.29 etc
+    'LIQUIDITY_TRAP_PRICE': 0.92,
 
-    # Signal filters
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY'],
-    'MIN_MOMENTUM'        : 5.0,       # Very low momentum filter (was 10) → more entries
+    # Signal filters — TRAINING MODE (accept all signal types)
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE', 'MONITOR'],
+    'MIN_MOMENTUM'        : 5.0,       # Very low momentum filter → more entries
     'MIN_LIQUIDITY'       : 2000,      # Per user instruction: keep at 2000
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
