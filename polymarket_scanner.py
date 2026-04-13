@@ -123,13 +123,13 @@ CFG = {
 
     # Auto-Close — faster turnover for data mining
     'TAKE_PROFIT_PCT'     : 35.0,
-    'STOP_LOSS_PCT'       : 15.0,
+    'STOP_LOSS_PCT'       : 10.0,
     'TIME_EXIT_MINUTES'   : 45,
     'FORCE_EXIT_MINUTES'  : 3,
     'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48) → faster cycling
 
     # AI & Entry Filters — TRAINING MODE (wide open for data mining)
-    'MIN_ML_CONFIDENCE'   : 20.0,      # Per user instruction: brain minimum 25 -> 20
+    'MIN_ML_CONFIDENCE'   : 30.0,      # Strict quality filter to stop bleeding
     'MAX_ENTRY_PRICE'     : 0.70,      # Constrain range to 0.30 - 0.70
     'MIN_ENTRY_PRICE'     : 0.30,      # Avoid deeply low probability void entries
     'LIQUIDITY_TRAP_PRICE': 0.92,
@@ -1082,7 +1082,7 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 4.0 and (vol >= CFG.get('MIN_VOLUME_24H', 1000) or vol_spike):
+    elif abs(mom_pct) >= 5.0 and (vol >= CFG.get('MIN_VOLUME_24H', 1000) or vol_spike):
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
