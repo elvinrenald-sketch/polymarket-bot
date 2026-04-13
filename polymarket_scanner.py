@@ -105,38 +105,38 @@ CFG = {
     'CLOB_API'            : 'https://clob.polymarket.com',
 
     # Scanner
-    'SCAN_INTERVAL'       : 15,      # Polling interval (was 5). Reduced to prevent Cloudflare ban!
+    'SCAN_INTERVAL'       : 10,       # 10s scan cycle (balanced speed vs rate-limit)
     'MARKETS_PER_PAGE'    : 100,
-    'MAX_PAGES'           : 5,       # Max pages to fetch (was 15). Only need top 500 markets.
+    'MAX_PAGES'           : 5,        # Top 500 markets only
     'DISPLAY_TOP'         : 10,
-    'CLEAR_SCREEN'        : False,   # Railway tidak punya terminal
+    'CLEAR_SCREEN'        : False,
 
-    # Risk Management — Dynamic Sizing
-    'BANKROLL'            : 10.00,     # Starting equity
-    'STATS_RESET_ID'      : 82,        # Tampilkan trade SETELAH id 82 (history dipakai ML!)
-    'BET_PCT'             : 0.10,      # 10% of equity per trade ($10→$1, $20→$2)
-    'MIN_BET'             : 1.00,      # Minimum $1 (Polymarket requirement)
-    'MAX_BET'             : 5.00,      # Maximum bet $5.00
-    'MAX_POSITIONS'       : 5,         # Max 5 concurrent positions
-    'MAX_EXPOSURE_PCT'    : 0.50,      # Max 50% of equity exposed
+    # Risk Management — TRAINING MODE
+    'BANKROLL'            : 10.00,
+    'STATS_RESET_ID'      : 82,
+    'BET_PCT'             : 0.10,
+    'MIN_BET'             : 1.00,
+    'MAX_BET'             : 5.00,
+    'MAX_POSITIONS'       : 8,         # 8 slots (was 5) → more parallel trades = faster data
+    'MAX_EXPOSURE_PCT'    : 0.70,      # 70% exposure allowed (was 50%) → room for 8 slots
 
-    # Auto-Close rules — WHALE MODE: Cut losses fast, lock profits early
-    'TAKE_PROFIT_PCT'     : 35.0,      # Close @ +35% profit (lock in early!)
-    'STOP_LOSS_PCT'       : 15.0,      # Stop loss at -15% (cut losses TIGHT)
-    'TIME_EXIT_MINUTES'   : 45,        # Close if <45 min left
-    'FORCE_EXIT_MINUTES'  : 3,         # FORCE close if <3 min left
-    'MAX_HOLD_HOURS'      : 48,
-    
-    # AI & Entry Filters
-    'MIN_ML_CONFIDENCE'   : 10.0,      # Give the ML room to explore (was 58.0)
-    'MAX_ENTRY_PRICE'     : 0.73,      # Never buy above $0.73
-    'MIN_ENTRY_PRICE'     : 0.30,      # Avoid absolute traps, but accept reasonable risks (was 0.40)
-    'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto-exit if price >$0.90 (illiquid zone)
+    # Auto-Close — faster turnover for data mining
+    'TAKE_PROFIT_PCT'     : 35.0,
+    'STOP_LOSS_PCT'       : 15.0,
+    'TIME_EXIT_MINUTES'   : 45,
+    'FORCE_EXIT_MINUTES'  : 3,
+    'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48) → faster cycling
 
-    # Signal filters (Brain does the real filtering)
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY'], # Added 'BUY' back to triggers
-    'MIN_MOMENTUM'        : 10.0,      # Accept moderate trends (was 15.0)
-    'MIN_LIQUIDITY'       : 2000,      # Slightly lower liquidity floor (was 3000)
+    # AI & Entry Filters — TRAINING MODE
+    'MIN_ML_CONFIDENCE'   : 25.0,      # Per user instruction: brain minimum 25
+    'MAX_ENTRY_PRICE'     : 0.73,
+    'MIN_ENTRY_PRICE'     : 0.30,
+    'LIQUIDITY_TRAP_PRICE': 0.90,
+
+    # Signal filters
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY'],
+    'MIN_MOMENTUM'        : 5.0,       # Very low momentum filter (was 10) → more entries
+    'MIN_LIQUIDITY'       : 2000,      # Per user instruction: keep at 2000
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
@@ -1192,10 +1192,10 @@ class PositionManager:
         max_exp = equity * CFG['MAX_EXPOSURE_PCT']
         if self.total_exposure >= max_exp:
             return False, f"Exposure penuh ${self.total_exposure:.2f}/${max_exp:.2f}"
-        # ── CIRCUIT BREAKER: 3 consecutive real losses → pause 1 hour ──
-        breaker = self._check_circuit_breaker()
-        if breaker:
-            return False, breaker
+        # ── CIRCUIT BREAKER: DISABLED during training mode ──
+        # breaker = self._check_circuit_breaker()
+        # if breaker:
+        #     return False, breaker
         return True, 'OK'
 
     def _check_circuit_breaker(self) -> Optional[str]:
