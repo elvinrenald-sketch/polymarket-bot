@@ -1627,7 +1627,8 @@ async def main():
 
                 # ── DEEP ANALYSIS: verify with external data ────
                 auto_candidates = []
-                if brain and pre_candidates:
+                can_open_slots, _ = pm.can_open()
+                if brain and pre_candidates and can_open_slots:
                     for candidate in pre_candidates[:10]:
                         try:
                             analysis = await brain.analyze_signal(session, candidate)
