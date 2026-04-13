@@ -1545,6 +1545,7 @@ async def main():
     await pm.refresh()
     already_opened = db_get_open_market_ids()
     already_opened_questions = db_get_open_market_questions()
+    rejected_cache = {}  # {market_id: timestamp_rejected}
     
     # equity_curve is now computed fresh from DB in /api/state
 
@@ -1629,6 +1630,7 @@ async def main():
                     r for r in results
                     if r.get('is_auto')
                     and r['id'] not in already_opened
+                    and r['id'] not in rejected_cache
                     and r.get('question', '').strip() not in already_opened_questions
                     and r['liquidity'] >= CFG['MIN_LIQUIDITY']
                     and r.get('entry_price', 1.0) <= CFG.get('MAX_ENTRY_PRICE', 0.85)
@@ -1648,17 +1650,32 @@ async def main():
                             candidate['should_trade'] = analysis.get('should_trade', False)
                             candidate['gates'] = analysis.get('gates_passed', '0/0')
 
-                            if analysis.get('should_trade') and analysis.get('brain_score', 0) >= CFG.get('MIN_ML_CONFIDENCE', 40):
+                            _should_trade = analysis.get('should_trade', False)
+                            _brain_score = analysis.get('brain_score', 0)
+                            _min_conf = CFG.get('MIN_ML_CONFIDENCE', 40)
+                            _score_pass = _brain_score >= _min_conf
+
+                            if _should_trade and _score_pass:
                                 auto_candidates.append(candidate)
                                 log.info(f"[BRAIN] APPROVED: {candidate['question'][:50]} | "
-                                         f"Score:{analysis['brain_score']:.0f} | "
+                                         f"Score:{_brain_score:.0f} (>= {_min_conf}) | "
                                          f"Gates:{analysis['gates_passed']}")
                             else:
+                                rejected_cache[candidate['id']] = time.time()
+                                reason = []
+                                if not _should_trade: reason.append("Gates Failed")
+                                if not _score_pass: reason.append(f"Score < {_min_conf}")
+                                reason_str = " & ".join(reason) if reason else "Unknown"
+                                
                                 log.info(f"[BRAIN] REJECTED: {candidate['question'][:50]} | "
-                                         f"Score:{analysis['brain_score']:.0f} | "
-                                         f"Gates:{analysis['gates_passed']}")
+                                         f"Score:{_brain_score:.0f} | "
+                                         f"Gates:{analysis['gates_passed']} | Reason: {reason_str}")
                         except Exception as e:
                             log.debug(f'[BRAIN] Analysis error: {e}')
+                
+                # Periodically clean rejected cache (keep for 1 hour)
+                now = time.time()
+                rejected_cache = {k: v for k, v in rejected_cache.items() if now - v < 3600}
 
                 # Train Brain every 15 scans
                 if brain and scans % 15 == 0:
