@@ -130,8 +130,8 @@ CFG = {
 
     # AI & Entry Filters — TRAINING MODE (wide open for data mining)
     'MIN_ML_CONFIDENCE'   : 25.0,      # Per user instruction: brain minimum 25
-    'MAX_ENTRY_PRICE'     : 0.85,      # Wider range (was 0.73) → more entries
-    'MIN_ENTRY_PRICE'     : 0.08,      # Allow cheap coins too (was 0.30) → catches $0.12, $0.29 etc
+    'MAX_ENTRY_PRICE'     : 0.70,      # Constrain range to 0.30 - 0.70
+    'MIN_ENTRY_PRICE'     : 0.30,      # Avoid deeply low probability void entries
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
     # Signal filters — TRAINING MODE (accept all signal types)
@@ -1080,12 +1080,7 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 4 and vol_spike:
-        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
-        signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
-        entry_name = d; is_strong = True; is_auto = True
-
-    elif abs(mom_pct) >= 3.5 and (vol >= 300 or vol_spike):
+    elif abs(mom_pct) >= 5.5 and (vol >= 300 or vol_spike):
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
