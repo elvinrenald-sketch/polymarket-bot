@@ -138,6 +138,8 @@ CFG = {
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE', 'MONITOR'],
     'MIN_MOMENTUM'        : 5.0,       # Very low momentum filter → more entries
     'MIN_LIQUIDITY'       : 2000,      # Per user instruction: keep at 2000
+    'MIN_VOLUME_24H'      : 2000,      # Minimum real volume to avoid empty orders
+    'MAX_DAYS_TO_EXPIRY'  : 2.0,       # Max 2 days to avoid tying up capital
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
@@ -1080,7 +1082,7 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 5.5 and (vol >= 300 or vol_spike):
+    elif abs(mom_pct) >= 5.5 and (vol >= CFG.get('MIN_VOLUME_24H', 2000) or vol_spike):
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
@@ -1598,7 +1600,8 @@ async def main():
                     and r.get('entry_price', 1.0) <= CFG.get('MAX_ENTRY_PRICE', 0.85)
                     and r.get('entry_price', 0.0) >= CFG.get('MIN_ENTRY_PRICE', 0.08)
                     and r.get('spread_pct', 100) <= 8.0
-                    and (r['days'] is None or r['days'] >= 0.02)
+                    and r.get('volume_24h', 0) >= CFG.get('MIN_VOLUME_24H', 2000)
+                    and (r['days'] is not None and 0.02 <= r['days'] <= CFG.get('MAX_DAYS_TO_EXPIRY', 2.0))
                 ]
 
                 # ── DEEP ANALYSIS: verify with external data ────
