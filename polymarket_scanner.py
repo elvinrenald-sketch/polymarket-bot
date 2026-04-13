@@ -330,7 +330,8 @@ async def get_state():
         "positions": pos_out,
         "top_scans": scans_out,
         "equity_curve": get_historical_equity_curve(),
-        "brain_learning": BRAIN_LEARNING
+        "brain_learning": BRAIN_LEARNING,
+        "max_positions": CFG.get('MAX_POSITIONS', 8)
     }
 
 @app.get("/api/debug")

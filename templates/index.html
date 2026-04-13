@@ -90,7 +90,7 @@
         </div>
         <div class="flex space-x-6 text-sm text-gray-400" id="header-stats">
             <span>SCANS: <span id="v-scans" class="quant-text-green">0</span></span>
-            <span>OPEN: <span id="v-open-count" class="text-white">0</span>/5</span>
+            <span>OPEN: <span id="v-open-count" class="text-white">0</span>/<span id="v-max-pos">8</span></span>
             <span>PING: <span id="v-ping" class="text-white">0ms</span></span>
         </div>
         <div>
@@ -270,6 +270,7 @@
             document.getElementById('v-scans').innerText = data.scans;
             document.getElementById('v-ping').innerText = data.ping_ms + 'ms';
             document.getElementById('v-open-count').innerText = data.positions.length;
+            if(data.max_positions) document.getElementById('v-max-pos').innerText = data.max_positions;
             
             // Core logic updates
             lastPing = data.ping_ms;
