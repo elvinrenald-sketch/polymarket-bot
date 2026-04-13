@@ -1069,47 +1069,33 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'ARBITRAGE'; action = 'BELI ALL'; color = GG
         is_strong = True; is_auto = True
         
-    elif abs(mom_pct) >= 12 and near_res and vol_spike:
+    elif abs(mom_pct) >= 8 and vol_spike:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 10 and near_res:
+    elif abs(mom_pct) >= 6:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 15 and vol_spike:
-        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
-        signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
-        entry_name = d; is_strong = True; is_auto = True
-
-    elif abs(mom_pct) >= 15:
+    elif abs(mom_pct) >= 4 and vol_spike:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 10 and vol_spike:
+    elif abs(mom_pct) >= 2.5:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
 
-    elif vol_spike and near_res:
-        signal = 'EDGE'; action = 'WATCH'; color = YY
-        is_auto = True  # Brain will verify
-
-    elif abs(mom_pct) >= 5 and near_res:
-        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
-        signal = 'EDGE'; action = f'BUY {d[:10].upper()}'; color = YY
-        entry_name = d; is_auto = True  # Brain will verify
-
-    elif abs(mom_pct) >= 5:
-        d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
-        signal = 'MOMENTUM'; action = f'WATCH {d[:10].upper()}'; color = C
-        entry_name = d
+    elif vol_spike:
+        signal = 'EDGE'; action = 'WATCH VOL'; color = YY
+        is_auto = True  # Brain will verify validation of this volume spike
 
     elif near_res and days is not None and days < 0.25:
-        signal = 'NEAR-RES'; action = 'WATCH'; color = Y
+        signal = 'EDGE'; action = 'WATCH TIME'; color = Y
+        is_auto = True  # Try to grab last-minute opportunities if brain affirms
 
     else:
         signal = 'MONITOR'; action = 'MONITOR'; color = W
