@@ -1486,6 +1486,9 @@ async def main():
     brain = None
     if TradingBrain:
         brain = TradingBrain(DB_PATH, MODEL_PATH)
+        # Force initial training to absorb updated logic (VOID learning, etc)
+        log.info("[BRAIN] Triggering initial training session...")
+        brain.train()
 
     banner()
     log.info('=' * 60)
