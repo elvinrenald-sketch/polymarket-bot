@@ -130,7 +130,7 @@ CFG = {
     'MAX_HOLD_HOURS'      : 24,
 
     # AI & Entry Filters — WHALE MODE (strict sniper)
-    'MIN_ML_CONFIDENCE'   : 60.0,      # High confidence: only take trades AI is very sure about
+    'MIN_ML_CONFIDENCE'   : 53.0,      # Brain Score min 53 + AI ML (should_trade) as final gatekeeper
     'MAX_ENTRY_PRICE'     : 0.70,      # Tight: avoid low-margin high-price traps
     'MIN_ENTRY_PRICE'     : 0.25,      # Tight: avoid whale manipulation zone
     'LIQUIDITY_TRAP_PRICE': 0.92,
