@@ -112,35 +112,35 @@ CFG = {
     'DISPLAY_TOP'         : 10,
     'CLEAR_SCREEN'        : False,
 
-    # Risk Management — TRAINING MODE
+    # Risk Management — WHALE MODE (Sniper Elit)
     'BANKROLL'            : 10.00,
     'STATS_RESET_ID'      : 82,
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
-    'MAX_BET'             : 1.00,      # Fixed size for training mining
+    'MAX_BET'             : 1.00,
     'MAX_POSITIONS'       : 10,        # 10 slots
     'MAX_EXPOSURE_PCT'    : 0.90,      # 90% exposure allowed
 
 
-    # Auto-Close — faster turnover for data mining
+    # Auto-Close — Whale Mode
     'TAKE_PROFIT_PCT'     : 35.0,
     'STOP_LOSS_PCT'       : 20.0,
     'TIME_EXIT_MINUTES'   : 45,
     'FORCE_EXIT_MINUTES'  : 3,
-    'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48) → faster cycling
+    'MAX_HOLD_HOURS'      : 24,
 
-    # AI & Entry Filters — TRAINING MODE (wide open for data mining)
-    'MIN_ML_CONFIDENCE'   : 25.0,      # Lowered from 30.0 to increase aggressiveness/data mining
-    'MAX_ENTRY_PRICE'     : 0.80,      # Widened to 0.80
-    'MIN_ENTRY_PRICE'     : 0.20,      # Widened to 0.20
+    # AI & Entry Filters — WHALE MODE (strict sniper)
+    'MIN_ML_CONFIDENCE'   : 60.0,      # High confidence: only take trades AI is very sure about
+    'MAX_ENTRY_PRICE'     : 0.70,      # Tight: avoid low-margin high-price traps
+    'MIN_ENTRY_PRICE'     : 0.25,      # Tight: avoid whale manipulation zone
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
-    # Signal filters — TRAINING MODE (accept all signal types)
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE', 'MONITOR'],
-    'MIN_MOMENTUM'        : 1.0,       # Lowered from 5.0 to 1.0 to massively boost entry rate
-    'MIN_LIQUIDITY'       : 2000,      # Per user instruction: keep at 2000
-    'MIN_VOLUME_24H'      : 1000,      # Minimum real volume to avoid empty orders
-    'MAX_DAYS_TO_EXPIRY'  : 7.0,       # Boosted to 7 DAYS to capture massive amount of markets!
+    # Signal filters — WHALE MODE (only strong signals)
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY'],
+    'MIN_MOMENTUM'        : 5.0,       # Strict: only enter on confirmed price breakouts
+    'MIN_LIQUIDITY'       : 5000,      # High liquidity only: avoid thin markets
+    'MIN_VOLUME_24H'      : 3000,      # High volume only: real active markets
+    'MAX_DAYS_TO_EXPIRY'  : 2.0,       # Max 2 days: fast turnover
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
@@ -1077,24 +1077,24 @@ def analyze(names, gamma_px, clob, liq, vol, days, prev_px) -> Optional[dict]:
         signal = 'ARBITRAGE'; action = 'BELI ALL'; color = GG
         is_strong = True; is_auto = True
         
-    elif abs(mom_pct) >= 3.0 and vol_spike:
+    elif abs(mom_pct) >= 8 and vol_spike:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= 2.0:
+    elif abs(mom_pct) >= 6:
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'STRONG BUY'; action = f'BUY {d[:12].upper()}'; color = GG
         entry_name = d; is_strong = True; is_auto = True
 
-    elif abs(mom_pct) >= CFG.get('MIN_MOMENTUM', 1.0) and (vol >= CFG.get('MIN_VOLUME_24H', 1000) or vol_spike):
+    elif abs(mom_pct) >= CFG.get('MIN_MOMENTUM', 5.0) and (vol >= CFG.get('MIN_VOLUME_24H', 3000) or vol_spike):
         d = names[0] if mom_pct > 0 else (names[1] if N > 1 else names[0])
         signal = 'BUY'; action = f'BUY {d[:12].upper()}'; color = G
         entry_name = d; is_strong = True; is_auto = True
 
     elif vol_spike:
-        signal = 'EDGE'; action = 'BUY VOL'; color = YY
-        is_auto = True  # AUTO-BUY enabled: Capture high-quality volume explosions (Active Markets) regardless of 10s momentum
+        signal = 'EDGE'; action = 'WATCH VOL'; color = YY
+        is_auto = False  # WHALE MODE: Do NOT auto-buy volume spikes without momentum confirmation
 
     elif near_res and days is not None and days < 0.25:
         signal = 'EDGE'; action = 'WATCH TIME'; color = Y
