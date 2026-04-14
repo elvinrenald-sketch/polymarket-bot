@@ -131,8 +131,8 @@ CFG = {
 
     # AI & Entry Filters — TRAINING MODE (wide open for data mining)
     'MIN_ML_CONFIDENCE'   : 30.0,      # Strict quality filter to stop bleeding
-    'MAX_ENTRY_PRICE'     : 0.70,      # Constrain range to 0.30 - 0.70
-    'MIN_ENTRY_PRICE'     : 0.30,      # Avoid deeply low probability void entries
+    'MAX_ENTRY_PRICE'     : 0.75,      # Adjusted from 0.70 to increase entry flow
+    'MIN_ENTRY_PRICE'     : 0.25,      # Adjusted from 0.30 to increase entry flow
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
     # Signal filters — TRAINING MODE (accept all signal types)
