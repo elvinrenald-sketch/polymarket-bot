@@ -130,7 +130,7 @@ CFG = {
     'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48) → faster cycling
 
     # AI & Entry Filters — TRAINING MODE (wide open for data mining)
-    'MIN_ML_CONFIDENCE'   : 30.0,      # Strict quality filter to stop bleeding
+    'MIN_ML_CONFIDENCE'   : 25.0,      # Lowered from 30.0 to increase aggressiveness/data mining
     'MAX_ENTRY_PRICE'     : 0.70,      # Reverted to 0.70
     'MIN_ENTRY_PRICE'     : 0.30,      # Reverted to 0.30
     'LIQUIDITY_TRAP_PRICE': 0.92,
