@@ -657,22 +657,22 @@ def db_get_open_positions() -> List[dict]:
         return []
 
 def db_get_open_market_ids() -> set:
-    """Gets all CURRENTLY OPEN market IDs to prevent duplicate simultaneous positions."""
+    """Gets ALL historical market IDs to prevent any re-entry, ever."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT market_id FROM positions WHERE status='OPEN'")
+        cur.execute("SELECT DISTINCT market_id FROM positions")
         rows = cur.fetchall(); conn.close()
         return {r[0] for r in rows}
     except Exception:
         return set()
 
 def db_get_open_market_questions() -> set:
-    """Gets CURRENTLY OPEN questions to prevent simultaneous opposite bets."""
+    """Gets ALL historical questions to prevent re-entering opposite sides later."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT question FROM positions WHERE status='OPEN'")
+        cur.execute("SELECT DISTINCT question FROM positions")
         rows = cur.fetchall(); conn.close()
         return {r[0].strip() for r in rows if r[0]}
     except Exception:
