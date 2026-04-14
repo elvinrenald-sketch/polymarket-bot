@@ -131,8 +131,8 @@ CFG = {
 
     # AI & Entry Filters — TRAINING MODE (wide open for data mining)
     'MIN_ML_CONFIDENCE'   : 25.0,      # Lowered from 30.0 to increase aggressiveness/data mining
-    'MAX_ENTRY_PRICE'     : 0.70,      # Reverted to 0.70
-    'MIN_ENTRY_PRICE'     : 0.30,      # Reverted to 0.30
+    'MAX_ENTRY_PRICE'     : 0.80,      # Widened to 0.80
+    'MIN_ENTRY_PRICE'     : 0.20,      # Widened to 0.20
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
     # Signal filters — TRAINING MODE (accept all signal types)
@@ -140,7 +140,7 @@ CFG = {
     'MIN_MOMENTUM'        : 1.0,       # Lowered from 5.0 to 1.0 to massively boost entry rate
     'MIN_LIQUIDITY'       : 2000,      # Per user instruction: keep at 2000
     'MIN_VOLUME_24H'      : 1000,      # Minimum real volume to avoid empty orders
-    'MAX_DAYS_TO_EXPIRY'  : 2.0,       # Max 2 days to avoid tying up capital
+    'MAX_DAYS_TO_EXPIRY'  : 7.0,       # Boosted to 7 DAYS to capture massive amount of markets!
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
