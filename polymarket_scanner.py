@@ -112,34 +112,34 @@ CFG = {
     'DISPLAY_TOP'         : 10,
     'CLEAR_SCREEN'        : False,
 
-    # Risk Management — 🔪 BRUTAL SCALPER MODE
+    # Risk Management — 🔪 HYPER SCALPER MODE
     'BANKROLL'            : 10.00,
     'STATS_RESET_ID'      : 82,
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
     'MAX_BET'             : 1.00,      # Fixed $1 per scalp
-    'MAX_POSITIONS'       : 10,        # 10 slots — fill them all fast
-    'MAX_EXPOSURE_PCT'    : 0.90,      # 90% exposure allowed
+    'MAX_POSITIONS'       : 10,        # 10 slots — fill them ALL
+    'MAX_EXPOSURE_PCT'    : 0.95,      # 95% exposure — use almost everything
 
-    # Auto-Close — SCALPER: Hit and Run, take small bites FAST
-    'TAKE_PROFIT_PCT'     : 15.0,      # SCALP: grab +15% and GTFO
-    'STOP_LOSS_PCT'       : 10.0,      # SCALP: cut bleeding at -10% (2:1.5 ratio)
-    'TIME_EXIT_MINUTES'   : 15,        # SCALP: if no move in 15min, dump it
-    'FORCE_EXIT_MINUTES'  : 2,         # SCALP: force close stuck positions faster
-    'MAX_HOLD_HOURS'      : 2,         # SCALP: max 2 hours, never overnight
+    # Auto-Close — HYPER SCALP: Grab crumbs and RUN
+    'TAKE_PROFIT_PCT'     : 10.0,      # SCALP: +10% = instant cash out
+    'STOP_LOSS_PCT'       : 7.0,       # SCALP: -7% = cut IMMEDIATELY
+    'TIME_EXIT_MINUTES'   : 8,         # SCALP: 8 min no move? DUMP IT
+    'FORCE_EXIT_MINUTES'  : 1,         # SCALP: force close after 1 min stuck
+    'MAX_HOLD_HOURS'      : 1,         # SCALP: max 1 hour, NEVER hold long
 
-    # AI & Entry Filters — SCALPER (wide entry, tight spread)
-    'MIN_ML_CONFIDENCE'   : 25.0,      # Keep low: let AI learn scalp patterns
-    'MAX_ENTRY_PRICE'     : 0.75,      # Avoid high-price low-margin traps
-    'MIN_ENTRY_PRICE'     : 0.15,      # Widened: catch cheap scalps
+    # AI & Entry Filters — HYPER SCALPER (wide net, enough depth to exit)
+    'MIN_ML_CONFIDENCE'   : 20.0,      # Near-zero AI filter: learn from everything
+    'MAX_ENTRY_PRICE'     : 0.80,      # Wide but avoid extreme traps
+    'MIN_ENTRY_PRICE'     : 0.15,      # Catch cheap scalps
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
-    # Signal filters — SCALPER (cast wide net, filter by speed)
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE'],
-    'MIN_MOMENTUM'        : 1.0,       # Low: catch early moves before they explode
-    'MIN_LIQUIDITY'       : 2000,      # Need enough depth to exit quickly
-    'MIN_VOLUME_24H'      : 1500,      # Slightly higher: need active markets for fast fills
-    'MAX_DAYS_TO_EXPIRY'  : 3.0,       # SCALP: prefer near-term markets (faster resolution)
+    # Signal filters — HYPER SCALPER (accept everything with a pulse)
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE', 'MONITOR'],
+    'MIN_MOMENTUM'        : 0.5,       # Near-zero: any tiny move counts
+    'MIN_LIQUIDITY'       : 2500,      # Enough depth to exit cleanly
+    'MIN_VOLUME_24H'      : 1500,      # Active markets for fast fills
+    'MAX_DAYS_TO_EXPIRY'  : 3.0,       # Near-term markets = faster action
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
