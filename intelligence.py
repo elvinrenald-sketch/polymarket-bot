@@ -836,8 +836,39 @@ class ModelManager:
                 try:
                     data = json.loads(row['features_json'])
                     feat = {}
+
+                    # CRITICAL: Check if ML features exist at top level
+                    # If not, try nested brain_analysis.features
+                    # If still not, COMPUTE from raw data
+                    ml_source = data  # default: top-level
+                    if 'liquidity_log' not in data or data.get('liquidity_log', 0) == 0:
+                        # Try nested path (old format)
+                        nested = data.get('brain_analysis', {}).get('features', {})
+                        if nested and nested.get('liquidity_log', 0) != 0:
+                            ml_source = {**data, **nested}
+                        else:
+                            # COMPUTE features from raw data on-the-fly
+                            liq = data.get('liquidity', 0)
+                            vol = data.get('volume_24h', 0)
+                            mom = data.get('momentum_pct', 0)
+                            ep  = data.get('entry_price', 0.5)
+                            sp  = data.get('spread_pct', 0)
+                            liq_log = math.log10(max(liq, 1))
+                            vol_log = math.log10(max(vol, 1))
+                            ml_source = dict(data)
+                            ml_source['liquidity_log'] = round(liq_log, 3)
+                            ml_source['volume_log']    = round(vol_log, 3)
+                            ml_source['momentum_abs']  = round(abs(mom), 2)
+                            ml_source['price_distance_from_50'] = round(abs(ep - 0.5) * 2, 3)
+                            ml_source['market_efficiency'] = round(
+                                min(1.0, liq_log / 6) * min(1.0, vol_log / 5), 3)
+                            # vol_liq_ratio: volume relative to liquidity
+                            if liq > 0:
+                                ml_source['vol_liq_ratio'] = round(vol / liq, 2)
+
                     for fn in self.feature_names:
-                        feat[fn] = float(data.get(fn, 0))
+                        feat[fn] = float(ml_source.get(fn, 0))
+
                     # 3-CLASS TARGET: WIN=2, VOID/STAGNANT=1, LOSS=0
                     res = row['result']
                     if res == 'WIN':

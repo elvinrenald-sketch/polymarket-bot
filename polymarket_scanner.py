@@ -603,7 +603,38 @@ def _cleanup_duplicate_trades():
 
 def db_open_position(r: dict, amount: float, shares: float) -> int:
     ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    features = json.dumps(r) # Save the whole result as features
+    # CRITICAL FIX: Store ML-ready features at top level of features_json
+    # Previously stored raw `r` dict, but ML training looked for keys like
+    # 'liquidity_log' which only existed deep inside r['brain_analysis']['features']
+    # Now we merge the extracted features to the top level so training finds them.
+    features_data = dict(r)  # shallow copy
+    brain_analysis = r.get('brain_analysis', {})
+    ml_features = brain_analysis.get('features', {})
+    if ml_features:
+        # Merge ML features (liquidity_log, volume_log, momentum_abs, etc.)
+        # directly into top level so training can read them
+        features_data.update(ml_features)
+    else:
+        # Fallback: compute features from raw data if brain_analysis missing
+        import math
+        liq = r.get('liquidity', 0)
+        vol = r.get('volume_24h', 0)
+        mom = r.get('momentum_pct', 0)
+        ep  = r.get('entry_price', 0.5)
+        sp  = r.get('spread_pct', 0)
+        features_data['liquidity_log'] = round(math.log10(max(liq, 1)), 3)
+        features_data['volume_log']    = round(math.log10(max(vol, 1)), 3)
+        features_data['momentum_abs']  = round(abs(mom), 2)
+        features_data['price_distance_from_50'] = round(abs(ep - 0.5) * 2, 3)
+        features_data['market_efficiency'] = round(
+            min(1.0, features_data['liquidity_log'] / 6) *
+            min(1.0, features_data['volume_log'] / 5), 3)
+
+    # Remove non-serializable and huge nested objects to keep JSON clean
+    for key_to_remove in ['brain_analysis']:
+        features_data.pop(key_to_remove, None)
+
+    features = json.dumps(features_data)
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
     cur.execute('''INSERT INTO positions
