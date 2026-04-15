@@ -508,24 +508,46 @@ def _reset_circuit_breaker():
         pass
 
 def _migrate_void_trades():
-    """One-time migration: convert old LOSS trades with P&L ~$0 to VOID.
-    This cleans the ML training data and corrects win rate."""
+    """One-time migration: convert misclassified trades to VOID.
+    Two categories get reclassified:
+    1. LOSS trades with P&L ~$0 (ghost trades / breakeven)
+    2. LOSS trades closed due to STAGNANT (price didn't move — not a real loss)
+    This ensures clean 3-class ML training data (WIN=2, VOID=1, LOSS=0)."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        # Find all CLOSED trades marked as LOSS but with P&L near $0
+        total_migrated = 0
+
+        # Migration 1: LOSS with P&L near $0 → VOID
         cur.execute(
             "SELECT COUNT(*) FROM positions "
             "WHERE status='CLOSED' AND result='LOSS' AND ABS(pnl_usd) < 0.005"
         )
-        count = cur.fetchone()[0]
-        if count > 0:
+        count1 = cur.fetchone()[0]
+        if count1 > 0:
             cur.execute(
                 "UPDATE positions SET result='VOID' "
                 "WHERE status='CLOSED' AND result='LOSS' AND ABS(pnl_usd) < 0.005"
             )
+            total_migrated += count1
+            log.info(f'[MIGRATION] {count1} ghost trades (PnL~$0) LOSS → VOID')
+
+        # Migration 2: STAGNANT close_reason but result=LOSS → VOID
+        cur.execute(
+            "SELECT COUNT(*) FROM positions "
+            "WHERE status='CLOSED' AND result='LOSS' AND close_reason LIKE '%STAGNANT%'"
+        )
+        count2 = cur.fetchone()[0]
+        if count2 > 0:
+            cur.execute(
+                "UPDATE positions SET result='VOID' "
+                "WHERE status='CLOSED' AND result='LOSS' AND close_reason LIKE '%STAGNANT%'"
+            )
+            total_migrated += count2
+            log.info(f'[MIGRATION] {count2} STAGNANT trades LOSS → VOID')
+
+        if total_migrated > 0:
             conn.commit()
-            log.info(f'[MIGRATION] Converted {count} ghost trades from LOSS → VOID')
             # Show corrected stats
             cur.execute("SELECT COUNT(*) FROM positions WHERE status='CLOSED' AND result='WIN'")
             wins = cur.fetchone()[0]
@@ -535,11 +557,10 @@ def _migrate_void_trades():
             voids = cur.fetchone()[0]
             real = wins + losses
             wr = (wins / real * 100) if real > 0 else 0
-            log.info(f'[MIGRATION] Corrected stats: Win={wins} | Loss={losses} | '
-                     f'Void={voids} | WR={wr:.1f}% (was {wins}/{wins+losses+count}='
-                     f'{wins/(wins+losses+count)*100:.1f}%)')
+            log.info(f'[MIGRATION] Corrected stats: W={wins} | L={losses} | '
+                     f'V={voids} | WR={wr:.1f}% (3-class ready)')
         else:
-            log.info('[MIGRATION] No ghost trades to fix — data is clean')
+            log.info('[MIGRATION] Data already clean — no migration needed')
         conn.close()
     except Exception as e:
         log.warning(f'[MIGRATION] Error: {e}')
@@ -618,8 +639,12 @@ def db_close_position(pos_id: int, exit_price: float, reason: str) -> float:
     proceeds = shares * exit_price if shares else 0
     pnl_usd  = proceeds - amount_usd
     pnl_pct  = (pnl_usd / amount_usd * 100) if amount_usd > 0 else 0
+    # RESULT CLASSIFICATION:
+    # STAGNANT close → always VOID (price didn't move, not a real loss)
     # VOID: P&L ~$0 (breakeven/ghost) should NOT count as LOSS
-    if abs(pnl_usd) < 0.005:
+    if 'STAGNANT' in reason:
+        result = 'VOID'
+    elif abs(pnl_usd) < 0.005:
         result = 'VOID'
     elif pnl_usd > 0:
         result = 'WIN'
@@ -768,7 +793,7 @@ async def tg_open(session, r: dict, pos_id: int, amount: float):
     await tg(session, text)
 
 async def tg_close(session, pos: dict, exit_price: float, pnl: float, reason: str):
-    if abs(pnl) < 0.005:
+    if 'STAGNANT' in reason or abs(pnl) < 0.005:
         emoji = 'VOID'
     elif pnl > 0:
         emoji = 'PROFIT'
@@ -1493,8 +1518,8 @@ async def main():
     brain = None
     if TradingBrain:
         brain = TradingBrain(DB_PATH, MODEL_PATH)
-        # Force initial training to absorb updated logic (VOID learning, etc)
-        log.info("[BRAIN] 🚀 REGENERATING BRAIN (applying VOID learning & 60% authority)...")
+        # Force initial training to absorb 3-CLASS classification logic
+        log.info("[BRAIN] 🚀 REGENERATING BRAIN (3-CLASS: WIN=2 VOID=1 LOSS=0 + max_features=sqrt)...")
         brain.train()
 
     storage_type = "VOLUME (Persistent)" if JOURNAL_DIR.startswith('/data') else "EPHEMERAL (Temporary - Data will be lost on restart)"

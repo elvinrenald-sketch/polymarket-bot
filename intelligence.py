@@ -791,16 +791,24 @@ class ModelManager:
 
     def train(self, db_path: str) -> bool:
         """Train model on historical closed trades.
-        UPGRADED: Now learns from VOID/STAGNANT trades (treated as LOSS).
+        3-CLASS CLASSIFICATION:
+            WIN  = 2  (real profit)
+            VOID = 1  (stagnant/no movement — wasted opportunity)
+            LOSS = 0  (real loss)
+
+        This forces the model to learn WHY trades go VOID:
+            → low volume, low liquidity, no momentum
+            → these features get non-zero importance!
+
         Recent trades are weighted 3x heavier (recency bias).
+        max_features='sqrt' prevents over-reliance on entry_price/spread.
         """
         if not HAS_SKLEARN or not HAS_PANDAS:
             return False
 
         try:
             conn = sqlite3.connect(db_path)
-            # UPGRADE: Include VOID and STAGNANT as training data (= LOSS)
-            # Use COALESCE so close_ts is safe even if column doesn't exist
+            # 3-CLASS: WIN, LOSS, VOID (and STAGNANT → VOID)
             try:
                 df = pd.read_sql_query(
                     "SELECT features_json, result, "
@@ -810,7 +818,6 @@ class ModelManager:
                     conn
                 )
             except Exception:
-                # Fallback: query without close_ts if column issue
                 df = pd.read_sql_query(
                     "SELECT features_json, result, '' as close_ts FROM positions "
                     "WHERE status='CLOSED' AND result IN ('WIN','LOSS','VOID','STAGNANT') "
@@ -823,10 +830,6 @@ class ModelManager:
                 log.info(f"[ML] Collecting data: {len(df)}/{self.min_samples}")
                 return False
 
-            # Force training on first run even if count is same to apply new logic
-            # if len(df) == self.last_count:
-            #     return False
-
             rows = []
             close_times = []
             for _, row in df.iterrows():
@@ -835,8 +838,14 @@ class ModelManager:
                     feat = {}
                     for fn in self.feature_names:
                         feat[fn] = float(data.get(fn, 0))
-                    # WIN = 1, everything else (LOSS, VOID, STAGNANT) = 0
-                    feat['target'] = 1 if row['result'] == 'WIN' else 0
+                    # 3-CLASS TARGET: WIN=2, VOID/STAGNANT=1, LOSS=0
+                    res = row['result']
+                    if res == 'WIN':
+                        feat['target'] = 2
+                    elif res in ('VOID', 'STAGNANT'):
+                        feat['target'] = 1
+                    else:  # LOSS
+                        feat['target'] = 0
                     rows.append(feat)
                     close_times.append(row.get('close_ts', ''))
                 except Exception:
@@ -849,18 +858,23 @@ class ModelManager:
             X = train_df[self.feature_names].values
             y = train_df['target'].values
 
-            # UPGRADE: Recency bias — recent trades weighted 3x heavier
+            # Count each class
+            n_wins  = int(sum(1 for v in y if v == 2))
+            n_voids = int(sum(1 for v in y if v == 1))
+            n_losses = int(sum(1 for v in y if v == 0))
+
+            # Recency bias — recent trades weighted 3x heavier
             now = datetime.now()
             sample_weights = []
             for ct in close_times:
                 try:
                     ct_dt = datetime.strptime(str(ct)[:19], '%Y-%m-%d %H:%M:%S')
                     hours_ago = (now - ct_dt).total_seconds() / 3600
-                    if hours_ago < 6:       # Last 6 hours: 3x weight
+                    if hours_ago < 6:
                         sample_weights.append(3.0)
-                    elif hours_ago < 24:    # Last 24 hours: 2x weight
+                    elif hours_ago < 24:
                         sample_weights.append(2.0)
-                    else:                   # Older: 1x weight
+                    else:
                         sample_weights.append(1.0)
                 except Exception:
                     sample_weights.append(1.0)
@@ -869,26 +883,30 @@ class ModelManager:
             X_scaled = self.scaler.fit_transform(X)
 
             self.model = GradientBoostingClassifier(
-                n_estimators=100,
+                n_estimators=150,
                 max_depth=4,
                 learning_rate=0.08,
                 min_samples_split=3,
                 min_samples_leaf=2,
                 subsample=0.85,
+                max_features='sqrt',   # FORCE feature diversity!
                 random_state=42,
             )
             self.model.fit(X_scaled, y, sample_weight=sample_weights)
 
-            wins = sum(y)
-            losses = len(y) - wins
             if len(rows) >= 15:
-                cv = cross_val_score(self.model, X_scaled, y,
-                                     cv=min(5, len(rows) // 4))
-                log.info(f"[ML] 🧠 TRAINED: {len(rows)} samples "
-                         f"(W:{wins} L:{losses}) | "
-                         f"Accuracy: {cv.mean():.1%}")
+                n_cv = min(5, len(rows) // 4)
+                if n_cv >= 2:
+                    cv = cross_val_score(self.model, X_scaled, y, cv=n_cv)
+                    log.info(f"[ML] 🧠 TRAINED: {len(rows)} samples "
+                             f"(W:{n_wins} V:{n_voids} L:{n_losses}) | "
+                             f"Accuracy: {cv.mean():.1%}")
+                else:
+                    log.info(f"[ML] 🧠 TRAINED: {len(rows)} samples "
+                             f"(W:{n_wins} V:{n_voids} L:{n_losses})")
             else:
-                log.info(f"[ML] 🧠 TRAINED: {len(rows)} samples (W:{wins} L:{losses})")
+                log.info(f"[ML] 🧠 TRAINED: {len(rows)} samples "
+                         f"(W:{n_wins} V:{n_voids} L:{n_losses})")
 
             # Log feature importance
             imp = sorted(zip(self.feature_names,
@@ -896,6 +914,10 @@ class ModelManager:
                          key=lambda x: x[1], reverse=True)
             top = ', '.join(f'{n}={v:.3f}' for n, v in imp[:5])
             log.info(f"[ML] Top features: {top}")
+
+            # Log all features so we can see the full picture
+            all_imp = ', '.join(f'{n}={v:.3f}' for n, v in imp)
+            log.info(f"[ML] All features: {all_imp}")
 
             self.last_count = len(rows)
             self._save()
@@ -906,7 +928,10 @@ class ModelManager:
             return False
 
     def predict(self, features: Dict[str, float]) -> float:
-        """Predict win probability.  Returns 0.0 to 1.0."""
+        """Predict win probability from 3-class model.
+        Classes: LOSS=0, VOID=1, WIN=2
+        Returns P(WIN) as 0.0 to 1.0.  -1.0 = no model.
+        """
         if not self.model or not self.scaler:
             return -1.0  # Sentinel: no model available
 
@@ -914,8 +939,16 @@ class ModelManager:
             X = [[features.get(fn, 0) for fn in self.feature_names]]
             X_scaled = self.scaler.transform(X)
             probs = self.model.predict_proba(X_scaled)[0]
-            win_idx = list(self.model.classes_).index(1) if 1 in self.model.classes_ else 0
-            return float(probs[win_idx])
+            classes = list(self.model.classes_)
+            # WIN = class 2
+            if 2 in classes:
+                win_idx = classes.index(2)
+                return float(probs[win_idx])
+            # Fallback for old 2-class model (WIN=1)
+            elif 1 in classes:
+                win_idx = classes.index(1)
+                return float(probs[win_idx])
+            return 0.0
         except Exception as e:
             log.debug(f"[ML] Predict error: {e}")
             return -1.0
@@ -955,14 +988,15 @@ class TradingBrain:
                 self.news_intel = NewsIntelligence()
             except Exception as e:
                 log.warning(f"[BRAIN] NewsIntelligence init failed: {e}")
-        log.info("[BRAIN] v5.0 initialized | "
+        log.info("[BRAIN] v6.0 initialized | "
                  f"ML model: {'LOADED' if self.model_mgr.is_trained else 'LEARNING'} | "
                  f"News: {'ACTIVE' if self.news_intel else 'DISABLED'}")
         # PERMANENT PROOF LOG — always visible on startup
-        log.info("[BRAIN] ✅ UPGRADED LOGIC ACTIVE:")
-        log.info("[BRAIN]   • VOID/STAGNANT = LOSS in training: YES")
-        log.info("[BRAIN]   • ML Authority: 60% (was 30%)")
-        log.info("[BRAIN]   • Recency bias: 3x weight for last 6h trades")
+        log.info("[BRAIN] ✅ 3-CLASS ML ACTIVE:")
+        log.info("[BRAIN]   • WIN=2, VOID=1, LOSS=0 (3-class classification)")
+        log.info("[BRAIN]   • VOID is its OWN class (not lumped with LOSS)")
+        log.info("[BRAIN]   • max_features='sqrt' → forces feature diversity")
+        log.info("[BRAIN]   • ML Authority: 60% | Recency bias: 3x")
         log.info("[BRAIN]   • Toxic keywords penalty: Elon Musk, Tweets, etc")
 
     # ── HEURISTIC SCORE ──────────────────────────────────────────
