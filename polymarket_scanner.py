@@ -112,35 +112,34 @@ CFG = {
     'DISPLAY_TOP'         : 10,
     'CLEAR_SCREEN'        : False,
 
-    # Risk Management — TRAINING MODE
+    # Risk Management — 🔪 BRUTAL SCALPER MODE
     'BANKROLL'            : 10.00,
     'STATS_RESET_ID'      : 82,
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
-    'MAX_BET'             : 1.00,      # Fixed size for training mining
-    'MAX_POSITIONS'       : 10,        # 10 slots
+    'MAX_BET'             : 1.00,      # Fixed $1 per scalp
+    'MAX_POSITIONS'       : 10,        # 10 slots — fill them all fast
     'MAX_EXPOSURE_PCT'    : 0.90,      # 90% exposure allowed
 
+    # Auto-Close — SCALPER: Hit and Run, take small bites FAST
+    'TAKE_PROFIT_PCT'     : 15.0,      # SCALP: grab +15% and GTFO
+    'STOP_LOSS_PCT'       : 10.0,      # SCALP: cut bleeding at -10% (2:1.5 ratio)
+    'TIME_EXIT_MINUTES'   : 15,        # SCALP: if no move in 15min, dump it
+    'FORCE_EXIT_MINUTES'  : 2,         # SCALP: force close stuck positions faster
+    'MAX_HOLD_HOURS'      : 2,         # SCALP: max 2 hours, never overnight
 
-    # Auto-Close — faster turnover for data mining
-    'TAKE_PROFIT_PCT'     : 35.0,
-    'STOP_LOSS_PCT'       : 20.0,
-    'TIME_EXIT_MINUTES'   : 45,
-    'FORCE_EXIT_MINUTES'  : 3,
-    'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48)
-
-    # AI & Entry Filters — TRAINING MODE (wide open for data mining)
-    'MIN_ML_CONFIDENCE'   : 25.0,      # Lowered to 25.0 to increase aggressiveness/data mining
-    'MAX_ENTRY_PRICE'     : 0.80,      # Widened to 0.80
-    'MIN_ENTRY_PRICE'     : 0.20,      # Widened to 0.20
+    # AI & Entry Filters — SCALPER (wide entry, tight spread)
+    'MIN_ML_CONFIDENCE'   : 25.0,      # Keep low: let AI learn scalp patterns
+    'MAX_ENTRY_PRICE'     : 0.75,      # Avoid high-price low-margin traps
+    'MIN_ENTRY_PRICE'     : 0.15,      # Widened: catch cheap scalps
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
-    # Signal filters — TRAINING MODE (accept all signal types)
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE', 'MONITOR'],
-    'MIN_MOMENTUM'        : 1.0,       # Lowered from 5.0 to 1.0 to massively boost entry rate
-    'MIN_LIQUIDITY'       : 2000,      # Per user instruction: keep at 2000
-    'MIN_VOLUME_24H'      : 1000,      # Minimum real volume to avoid empty orders
-    'MAX_DAYS_TO_EXPIRY'  : 7.0,       # Boosted to 7 DAYS to capture massive amount of markets!
+    # Signal filters — SCALPER (cast wide net, filter by speed)
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE'],
+    'MIN_MOMENTUM'        : 1.0,       # Low: catch early moves before they explode
+    'MIN_LIQUIDITY'       : 2000,      # Need enough depth to exit quickly
+    'MIN_VOLUME_24H'      : 1500,      # Slightly higher: need active markets for fast fills
+    'MAX_DAYS_TO_EXPIRY'  : 3.0,       # SCALP: prefer near-term markets (faster resolution)
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
