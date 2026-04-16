@@ -879,31 +879,28 @@ def db_get_open_positions() -> List[dict]:
         log.error(f'db_get_open_positions error: {e}')
         return []
 
-def db_get_open_market_ids() -> set:
-    """Gets market IDs of CURRENTLY OPEN positions only.
-    We do NOT block markets from historical (paper) trades,
-    so real trading can enter any valid market fresh.
-    Within one session, already_opened is extended after each entry
-    to prevent double-entry in the same scan cycle.
+def db_get_all_traded_market_ids() -> set:
+    """Gets ALL market IDs traded in the current run (including closed ones).
+    This prevents the bot from re-entering a market it has already traded and closed.
     """
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
         reset_id = CFG.get('STATS_RESET_ID', 0)
-        # Only block markets that are CURRENTLY OPEN (not historical)
-        cur.execute("SELECT DISTINCT market_id FROM positions WHERE status='OPEN' AND id > ?", (reset_id,))
+        # Block previously traded markets
+        cur.execute("SELECT DISTINCT market_id FROM positions WHERE id > ?", (reset_id,))
         rows = cur.fetchall(); conn.close()
         return {r[0] for r in rows}
     except Exception:
         return set()
 
-def db_get_open_market_questions() -> set:
-    """Gets questions of CURRENTLY OPEN positions to prevent duplicate-side entry."""
+def db_get_all_traded_market_questions() -> set:
+    """Gets questions of ALL traded positions to prevent duplicate-side entry."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
         reset_id = CFG.get('STATS_RESET_ID', 0)
-        cur.execute("SELECT DISTINCT question FROM positions WHERE status='OPEN' AND id > ?", (reset_id,))
+        cur.execute("SELECT DISTINCT question FROM positions WHERE id > ?", (reset_id,))
         rows = cur.fetchall(); conn.close()
         return {r[0].strip() for r in rows if r[0]}
     except Exception:
@@ -1831,8 +1828,8 @@ async def main():
     scans         = 0
     pm            = PositionManager()
     await pm.refresh()
-    already_opened = db_get_open_market_ids()
-    already_opened_questions = db_get_open_market_questions()
+    already_opened = db_get_all_traded_market_ids()
+    already_opened_questions = db_get_all_traded_market_questions()
     rejected_cache = {}  # {market_id: timestamp_rejected}
     
     # equity_curve is now computed fresh from DB in /api/state
