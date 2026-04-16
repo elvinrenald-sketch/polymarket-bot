@@ -2075,9 +2075,8 @@ async def main():
                             cur_price = op['entry_price']
                         
                         # Execute real sell order
-                        if CFG.get('REAL_MONEY_TRADE', False):
-                            log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
-                            await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
+                        log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
+                        await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
                             
                         pnl = db_close_position(op['id'], cur_price, "WEB_CLOSEALL")
                         await tg_close(session, op, cur_price, pnl, "WEB_CLOSEALL")
@@ -2096,9 +2095,9 @@ async def main():
                                 cur_price = op['entry_price']
                                 
                             # Execute real sell order
-                            if CFG.get('REAL_MONEY_TRADE', False):
-                                log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
-                                await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
+                            log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
+                            res = await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
+                            log.info(f"[WEB UI] CLOB output: {res}")
                                 
                             pnl = db_close_position(op['id'], cur_price, "WEB_MANUAL_CLOSE")
                             await tg_close(session, op, cur_price, pnl, "WEB_MANUAL_CLOSE")
