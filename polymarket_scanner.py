@@ -104,8 +104,8 @@ _clob_client = None
 
 def _init_clob_client():
     """Initialize Polymarket CLOB client for real order execution.
-    Uses signature_type=0 (EOA direct) — correct for private keys
-    exported directly from Polymarket Settings → Private Key page.
+    Uses signature_type=1 (Magic.link) — correct for accounts created via
+    Google/Email login on Polymarket (Magic.link embedded wallet).
     """
     global _clob_client
     if _clob_client is not None:
@@ -118,12 +118,12 @@ def _init_clob_client():
             'https://clob.polymarket.com',
             key=PRIVATE_KEY,
             chain_id=137,
-            signature_type=0,   # EOA: direct private key
+            signature_type=1,   # Magic.link: for Google/email Polymarket accounts
             funder=WALLET_ADDRESS,
         )
         client.set_api_creds(client.create_or_derive_api_creds())
         _clob_client = client
-        log.info('[CLOB] ✅ Real trade client initialized — LIVE TRADING ACTIVE')
+        log.info('[CLOB] ✅ Real trade client initialized (Magic.link) — LIVE TRADING ACTIVE')
         return client
     except Exception as e:
         log.error(f'[CLOB] ❌ Failed to initialize trade client: {e}')
