@@ -100,30 +100,36 @@ AUTO_TRADE       = os.environ.get('AUTO_TRADE', 'false').lower() == 'true'
 # ══════════════════════════════════════════════════════════════════
 # POLYMARKET CLOB CLIENT (Real Trade Execution)
 # ══════════════════════════════════════════════════════════════════
-_clob_client = None
+_clob_client    = None
+_CLOB_GEOBLOCK  = False   # Set True if geo-block detected — stops repeated attempts
 
 def _init_clob_client():
     """Initialize Polymarket CLOB client for real order execution.
-    Only called when AUTO_TRADE=true and PRIVATE_KEY is set.
-    Uses signature_type=1 (email/Magic wallet proxy — how Polymarket web works).
+    Tries signature_type=0 (EOA direct) first — works for keys exported
+    directly from Polymarket Settings → Private Key.
+    Falls back to signature_type=1 (Magic/proxy) if needed.
     """
-    global _clob_client
+    global _clob_client, _CLOB_GEOBLOCK
     if _clob_client is not None:
         return _clob_client
+    if _CLOB_GEOBLOCK:
+        return None  # Stop retrying after geo-block confirmed
     if not AUTO_TRADE or not PRIVATE_KEY:
         return None
     try:
         from py_clob_client.client import ClobClient
+        # Try signature_type=0 first (EOA — direct private key, no proxy)
+        # This is correct when PRIVATE_KEY is exported directly from Polymarket settings
         client = ClobClient(
             'https://clob.polymarket.com',
             key=PRIVATE_KEY,
-            chain_id=137,           # Polygon mainnet
-            signature_type=1,       # Email/Magic wallet (Polymarket default)
-            funder=WALLET_ADDRESS,  # Wallet that holds your USDC
+            chain_id=137,
+            signature_type=0,       # EOA: direct private key (most compatible)
+            funder=WALLET_ADDRESS,
         )
         client.set_api_creds(client.create_or_derive_api_creds())
         _clob_client = client
-        log.info('[CLOB] ✅ Real trade client initialized — LIVE TRADING ACTIVE')
+        log.info('[CLOB] ✅ Real trade client initialized (sig_type=0 EOA) — LIVE TRADING ACTIVE')
         return client
     except Exception as e:
         log.error(f'[CLOB] ❌ Failed to initialize trade client: {e}')
@@ -131,17 +137,15 @@ def _init_clob_client():
 
 async def execute_real_order(token_id: str, amount_usd: float, entry_price: float) -> dict:
     """Submit a real BUY market order to Polymarket.
-    
-    Args:
-        token_id:    The outcome token ID from CLOB (e.g. "123456...")
-        amount_usd:  Dollar amount to spend (e.g. 1.00)
-        entry_price: Expected price 0.0–1.0 for size calculation
-    
+
     Returns:
         dict with 'success', 'order_id', 'filled_price', 'error'
     """
+    global _CLOB_GEOBLOCK
     if not AUTO_TRADE or not PRIVATE_KEY:
         return {'success': False, 'error': 'AUTO_TRADE not enabled'}
+    if _CLOB_GEOBLOCK:
+        return {'success': False, 'error': 'GEO-BLOCKED — change Railway region to US-WEST'}
 
     client = _init_clob_client()
     if not client:
@@ -153,16 +157,16 @@ async def execute_real_order(token_id: str, amount_usd: float, entry_price: floa
 
         mo = MarketOrderArgs(
             token_id=token_id,
-            amount=amount_usd,      # $ amount (USDC)
+            amount=amount_usd,
             side=BUY,
-            order_type=OrderType.FOK,  # Fill-Or-Kill: all or nothing
+            order_type=OrderType.FOK,
         )
-        signed  = client.create_market_order(mo)
-        resp    = client.post_order(signed, OrderType.FOK)
+        signed = client.create_market_order(mo)
+        resp   = client.post_order(signed, OrderType.FOK)
 
         order_id = resp.get('orderID') or resp.get('id') or 'unknown'
         status   = resp.get('status', '')
-        log.info(f'[CLOB] Order submitted → ID:{order_id} Status:{status} Amount:${amount_usd:.2f}')
+        log.info(f'[CLOB] ✅ Order submitted → ID:{order_id} Status:{status} Amount:${amount_usd:.2f}')
         return {
             'success'      : True,
             'order_id'     : order_id,
@@ -171,8 +175,17 @@ async def execute_real_order(token_id: str, amount_usd: float, entry_price: floa
             'raw'          : resp,
         }
     except Exception as e:
-        log.error(f'[CLOB] Order failed: {e}')
-        return {'success': False, 'error': str(e)}
+        err_str = str(e)
+        # Detect geo-block and set flag to stop future attempts
+        if '403' in err_str and ('region' in err_str.lower() or 'geoblock' in err_str.lower()):
+            _CLOB_GEOBLOCK = True
+            log.error('[CLOB] 🚫 GEO-BLOCK DETECTED (HTTP 403)!')
+            log.error('[CLOB] ⚠️  Railway server is being geo-blocked by Polymarket.')
+            log.error('[CLOB] 🔧 FIX: Go to Railway → your service → Settings → Change REGION to: us-west1 or us-east1, then Redeploy.')
+            log.error('[CLOB] ℹ️  Bot will continue scanning but will NOT attempt more real orders until restarted.')
+        else:
+            log.error(f'[CLOB] Order failed: {e}')
+        return {'success': False, 'error': err_str}
 
 async def cancel_real_order(order_id: str) -> bool:
     """Cancel an open limit order. Used when closing positions early."""
