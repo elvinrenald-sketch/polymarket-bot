@@ -228,6 +228,31 @@ async def execute_real_sell_order(token_id: str, shares: float, exit_price: floa
         log.info(f'[CLOB] SELL submitted → ID:{order_id} Status:{status} Shares:{shares:.4f}')
         return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
     except Exception as e:
+        err_msg = str(e)
+        if "the balance is not enough -> balance:" in err_msg:
+            try:
+                import re
+                match = re.search(r'balance:\s*(\d+)', err_msg)
+                if match:
+                    # PM stores outcome tokens with 6 decimals
+                    real_shares = float(match.group(1)) / 1_000_000.0
+                    if real_shares > 0:
+                        log.warning(f"[CLOB] Share mismatch. Retrying sell with exact on-chain balance: {real_shares:.6f}")
+                        mo = MarketOrderArgs(
+                            token_id=token_id,
+                            amount=real_shares,
+                            side=SELL,
+                            order_type=OrderType.FOK,
+                        )
+                        signed  = client.create_market_order(mo)
+                        resp    = client.post_order(signed, OrderType.FOK)
+                        order_id = resp.get('orderID') or resp.get('id') or 'unknown'
+                        status   = resp.get('status', '')
+                        log.info(f'[CLOB] SELL submitted (Retry) → ID:{order_id} Status:{status} Shares:{real_shares:.6f}')
+                        return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
+            except Exception as retry_e:
+                log.error(f'[CLOB] Retry SELL order failed: {retry_e}')
+                
         log.error(f'[CLOB] SELL order failed: {e}')
         return {'success': False, 'error': str(e)}
 
