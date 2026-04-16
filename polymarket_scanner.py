@@ -216,7 +216,7 @@ async def execute_real_sell_order(token_id: str, shares: float, exit_price: floa
         # Sell by number of shares (outcome tokens)
         mo = MarketOrderArgs(
             token_id=token_id,
-            amount=round(shares, 4),   # shares to sell
+            amount=round(shares, 6),   # UPGRADED PRECISION: Polymarket uses 6 decimals
             side=SELL,
             order_type=OrderType.FOK,
         )
@@ -1158,10 +1158,11 @@ async def fetch_price(session, token_id: str) -> Optional[float]:
     if not token_id:
         return None
     try:
-        data = await api_get(session, f"{CFG['CLOB_API']}/midpoint",
-                             [('token_id', token_id)])
+        # We fetch the BID price (what we can sell for) to match Polymarket UI valuation
+        data = await api_get(session, f"{CFG['CLOB_API']}/price",
+                             [('token_id', token_id), ('side', 'buy')])
         if isinstance(data, dict):
-            v = float(data.get('mid', 0))
+            v = float(data.get('price', 0))
             return v if v > 0 else None
     except Exception:
         pass
@@ -1416,6 +1417,50 @@ class PositionManager:
 
     async def refresh(self):
         self.open_positions = db_get_open_positions()
+
+    async def sync_with_wallet(self, session):
+        """Periodically verify OPEN positions against actual Polymarket wallet balance.
+        This handles cases where trades were closed elsewhere or 'dust' was left.
+        """
+        try:
+            # Only sync if we have API keys
+            if not PRIVATE_KEY:
+                return
+                
+            open_pos = db_get_open_positions()
+            if not open_pos:
+                return
+                
+            log.info(f"[SYNC] Verifying {len(open_pos)} open positions against on-chain balance...")
+            
+            # Fetch balances for all open tokens
+            client = _init_clob_client()
+            if not client:
+                return
+                
+            for pos in open_pos:
+                try:
+                    tid = pos['token_id']
+                    if not tid: continue
+                    
+                    # SDK call to get balance
+                    # PM uses 6 decimals for tokens
+                    resp = client.get_balance_allowance(tid)
+                    bal_str = resp.get('balance', '0')
+                    bal_float = float(bal_str) / 1_000_000.0
+                    
+                    # If balance is 0 or extremely negligible (less than 0.000001 USDC value)
+                    # and the position is marked as OPEN in our DB, close it.
+                    if bal_float < 0.000001:
+                        log.warning(f"[SYNC] Ghost position found for Pos #{pos['id']} ({pos['question']}). Wallet balance is 0. Marking as CLOSED.")
+                        db_close_position(pos['id'], pos['entry_price'], "EXTERNAL_SYNC")
+                except Exception as e:
+                    log.error(f"[SYNC] Error checking balance for token {tid}: {e}")
+                    
+            # Refresh local memory
+            await self.refresh()
+        except Exception as e:
+            log.error(f"[SYNC] Global sync error: {e}")
 
     @property
     def count(self) -> int:
@@ -1849,6 +1894,12 @@ async def main():
             closed_this_scan = []
             try:
                 await pm.refresh()
+                
+                # --- AUTO-SYNC WALLET BALANCE ---
+                # Check actual blockchain balance every 10 scans to fix sync issues
+                if scans % 10 == 0:
+                    await pm.sync_with_wallet(session)
+                # --------------------------------
                 
                 # Fetch markets FIRST so we know which are active
                 raw = await fetch_markets(session)
