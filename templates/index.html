@@ -389,7 +389,7 @@
             
             const eqEl = document.getElementById('v-equity');
             eqEl.dataset.target = totalEquity;
-            if(!eqEl.dataset.val) eqEl.dataset.val = bankroll;
+            if(!eqEl.dataset.val) eqEl.dataset.val = 0; // start from 0 so tween animates to bankroll
 
             document.getElementById('v-trades').innerText = data.stats.closed_trades;
             document.getElementById('v-winrate').innerText = data.stats.win_rate.toFixed(1) + '%';
