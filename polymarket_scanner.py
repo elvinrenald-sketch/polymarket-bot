@@ -300,7 +300,7 @@ CFG = {
     'MAX_HOLD_HOURS'      : 24,
 
     # AI & Entry Filters — REAL TRADE MODE
-    'MIN_ML_CONFIDENCE'   : 40.0,      # Solid confidence required
+    'MIN_ML_CONFIDENCE'   : 53.0,      # High confidence required (53+)
     'MAX_ENTRY_PRICE'     : 0.70,      # Max 0.7 as requested
     'MIN_ENTRY_PRICE'     : 0.30,      # Min 0.3 as requested
     'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto sell/Trap at 0.9 as requested
