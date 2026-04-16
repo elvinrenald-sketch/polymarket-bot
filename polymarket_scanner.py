@@ -98,6 +98,96 @@ WALLET_ADDRESS   = os.environ.get('WALLET_ADDRESS', '')
 AUTO_TRADE       = os.environ.get('AUTO_TRADE', 'false').lower() == 'true'
 
 # ══════════════════════════════════════════════════════════════════
+# POLYMARKET CLOB CLIENT (Real Trade Execution)
+# ══════════════════════════════════════════════════════════════════
+_clob_client = None
+
+def _init_clob_client():
+    """Initialize Polymarket CLOB client for real order execution.
+    Only called when AUTO_TRADE=true and PRIVATE_KEY is set.
+    Uses signature_type=1 (email/Magic wallet proxy — how Polymarket web works).
+    """
+    global _clob_client
+    if _clob_client is not None:
+        return _clob_client
+    if not AUTO_TRADE or not PRIVATE_KEY:
+        return None
+    try:
+        from py_clob_client.client import ClobClient
+        client = ClobClient(
+            'https://clob.polymarket.com',
+            key=PRIVATE_KEY,
+            chain_id=137,           # Polygon mainnet
+            signature_type=1,       # Email/Magic wallet (Polymarket default)
+            funder=WALLET_ADDRESS,  # Wallet that holds your USDC
+        )
+        client.set_api_creds(client.create_or_derive_api_creds())
+        _clob_client = client
+        log.info('[CLOB] ✅ Real trade client initialized — LIVE TRADING ACTIVE')
+        return client
+    except Exception as e:
+        log.error(f'[CLOB] ❌ Failed to initialize trade client: {e}')
+        return None
+
+async def execute_real_order(token_id: str, amount_usd: float, entry_price: float) -> dict:
+    """Submit a real BUY market order to Polymarket.
+    
+    Args:
+        token_id:    The outcome token ID from CLOB (e.g. "123456...")
+        amount_usd:  Dollar amount to spend (e.g. 1.00)
+        entry_price: Expected price 0.0–1.0 for size calculation
+    
+    Returns:
+        dict with 'success', 'order_id', 'filled_price', 'error'
+    """
+    if not AUTO_TRADE or not PRIVATE_KEY:
+        return {'success': False, 'error': 'AUTO_TRADE not enabled'}
+
+    client = _init_clob_client()
+    if not client:
+        return {'success': False, 'error': 'CLOB client not initialized'}
+
+    try:
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
+
+        mo = MarketOrderArgs(
+            token_id=token_id,
+            amount=amount_usd,      # $ amount (USDC)
+            side=BUY,
+            order_type=OrderType.FOK,  # Fill-Or-Kill: all or nothing
+        )
+        signed  = client.create_market_order(mo)
+        resp    = client.post_order(signed, OrderType.FOK)
+
+        order_id = resp.get('orderID') or resp.get('id') or 'unknown'
+        status   = resp.get('status', '')
+        log.info(f'[CLOB] Order submitted → ID:{order_id} Status:{status} Amount:${amount_usd:.2f}')
+        return {
+            'success'      : True,
+            'order_id'     : order_id,
+            'status'       : status,
+            'filled_price' : entry_price,
+            'raw'          : resp,
+        }
+    except Exception as e:
+        log.error(f'[CLOB] Order failed: {e}')
+        return {'success': False, 'error': str(e)}
+
+async def cancel_real_order(order_id: str) -> bool:
+    """Cancel an open limit order. Used when closing positions early."""
+    client = _init_clob_client()
+    if not client:
+        return False
+    try:
+        client.cancel(order_id)
+        log.info(f'[CLOB] Order {order_id} cancelled')
+        return True
+    except Exception as e:
+        log.error(f'[CLOB] Cancel failed: {e}')
+        return False
+
+# ══════════════════════════════════════════════════════════════════
 # KONFIGURASI
 # ══════════════════════════════════════════════════════════════════
 CFG = {
@@ -1386,12 +1476,27 @@ class PositionManager:
             log.info(f'SKIP OPEN: {why}')
             return None
         # ── TIERED POSITION SIZING ────────────────────────────
-        # Fixed tiers based on equity level for controlled growth
         equity = self._calculate_equity()
         amount = self._get_bet_size(equity)
         entry  = r['entry_price']
         shares = amount / entry if entry > 0 else 0
         log.info(f'[SIZE] Equity=${equity:.2f} → Bet=${amount:.2f} (Tiered)')
+
+        # ── REAL TRADE EXECUTION ──────────────────────────────
+        if AUTO_TRADE and PRIVATE_KEY:
+            token_id = r.get('token_id', '')
+            if not token_id:
+                log.warning('[CLOB] ⚠️  No token_id found, skipping real order')
+                return None
+            result = await execute_real_order(token_id, amount, entry)
+            if not result['success']:
+                log.error(f'[CLOB] ❌ Order rejected: {result.get("error")} — trade NOT recorded')
+                return None  # Do NOT write to DB if order failed
+            log.info(f'[CLOB] ✅ Order filled! ID:{result["order_id"]} Status:{result["status"]}')
+            # Store order_id in r so db can save it for future reference
+            r['clob_order_id'] = result['order_id']
+
+        # ── RECORD TRADE (paper or real) ──────────────────────
         pos_id = db_open_position(r, amount, shares)
         await tg_open(session, r, pos_id, amount)
         await self.refresh()
