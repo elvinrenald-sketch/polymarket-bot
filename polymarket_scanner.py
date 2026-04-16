@@ -112,35 +112,35 @@ CFG = {
     'DISPLAY_TOP'         : 10,
     'CLEAR_SCREEN'        : False,
 
-    # Risk Management — TRAINING MODE
+    # Risk Management — REAL TRADE MODE
     'BANKROLL'            : 10.00,
     'STATS_RESET_ID'      : 82,
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
-    'MAX_BET'             : 1.00,      # Fixed size for training mining
-    'MAX_POSITIONS'       : 10,        # 10 slots
-    'MAX_EXPOSURE_PCT'    : 0.90,      # 90% exposure allowed
+    'MAX_BET'             : 25.00,     # Uncapped — tiered sizing handles this
+    'MAX_POSITIONS'       : 5,         # Real trade: 5 slots (not 10)
+    'MAX_EXPOSURE_PCT'    : 0.80,      # 80% max exposure (protect 20% reserve)
 
 
-    # Auto-Close — faster turnover for data mining
+    # Auto-Close — Real Trade timing
     'TAKE_PROFIT_PCT'     : 35.0,
     'STOP_LOSS_PCT'       : 20.0,
     'TIME_EXIT_MINUTES'   : 45,
     'FORCE_EXIT_MINUTES'  : 3,
-    'MAX_HOLD_HOURS'      : 24,        # 24h max hold (was 48)
+    'MAX_HOLD_HOURS'      : 24,
 
-    # AI & Entry Filters — TRAINING MODE (wide open for data mining)
-    'MIN_ML_CONFIDENCE'   : 25.0,      # Lowered to 25.0 to increase aggressiveness/data mining
-    'MAX_ENTRY_PRICE'     : 0.80,      # Widened to 0.80
-    'MIN_ENTRY_PRICE'     : 0.20,      # Widened to 0.20
+    # AI & Entry Filters — REAL TRADE MODE
+    'MIN_ML_CONFIDENCE'   : 38.0,      # 38: above natural WIN base rate (34.9%), still active
+    'MAX_ENTRY_PRICE'     : 0.80,
+    'MIN_ENTRY_PRICE'     : 0.20,
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
-    # Signal filters — TRAINING MODE (accept all signal types)
-    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE', 'MONITOR'],
-    'MIN_MOMENTUM'        : 1.0,       # Lowered from 5.0 to 1.0 to massively boost entry rate
-    'MIN_LIQUIDITY'       : 2000,      # Per user instruction: keep at 2000
-    'MIN_VOLUME_24H'      : 1000,      # Minimum real volume to avoid empty orders
-    'MAX_DAYS_TO_EXPIRY'  : 7.0,       # Boosted to 7 DAYS to capture massive amount of markets!
+    # Signal filters — REAL TRADE (MONITOR removed: too weak for real money)
+    'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE'],
+    'MIN_MOMENTUM'        : 1.0,
+    'MIN_LIQUIDITY'       : 2000,
+    'MIN_VOLUME_24H'      : 1000,
+    'MAX_DAYS_TO_EXPIRY'  : 7.0,
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
     'KELLY_FRACTION'      : 0.15,
@@ -1399,8 +1399,43 @@ class PositionManager:
 
     @staticmethod
     def _get_bet_size(equity: float) -> float:
-        """Fixed position sizing for Training Mode ($1 flat)."""
-        return 1.00
+        """Tiered position sizing — grows with equity for compounding.
+
+        Tier table (user-defined):
+          < $25    → $1.00
+          < $50    → $1.30
+          < $100   → $1.80
+          < $120   → $2.50
+          < $150   → $3.00
+          < $200   → $4.00
+          $200-500 → $4.00 + $1.50 per each $50 increment above $200
+          $500-1k  → $13.00 + $2.00 per each $100 increment above $500
+          $1000+   → to be upgraded later
+        """
+        if equity < 25:
+            return 1.00
+        elif equity < 50:
+            return 1.30
+        elif equity < 100:
+            return 1.80
+        elif equity < 120:
+            return 2.50
+        elif equity < 150:
+            return 3.00
+        elif equity < 200:
+            return 4.00
+        elif equity < 500:
+            # $200 base = $4.00, add $1.50 per $50 increment
+            increments = int((equity - 200) // 50)
+            return round(4.00 + increments * 1.50, 2)
+        elif equity < 1000:
+            # $500 base = $13.00, add $2.00 per $100 increment
+            # At $200: 4.00 + (300//50)*1.5 = 4.00 + 6*1.5 = 4+9 = $13.00 ✓
+            increments = int((equity - 500) // 100)
+            return round(13.00 + increments * 2.00, 2)
+        else:
+            # $1000+ — to be upgraded later
+            return round(13.00 + (5 * 2.00), 2)  # Cap at $23 until upgraded
 
     def _calculate_equity(self) -> float:
         """Calculate current equity = bankroll + total realized PnL."""
