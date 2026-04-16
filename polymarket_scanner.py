@@ -2073,6 +2073,12 @@ async def main():
                         cur_price = await fetch_price(session, op['token_id'])
                         if cur_price is None:
                             cur_price = op['entry_price']
+                        
+                        # Execute real sell order
+                        if CFG.get('REAL_MONEY_TRADE', False):
+                            log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
+                            await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
+                            
                         pnl = db_close_position(op['id'], cur_price, "WEB_CLOSEALL")
                         await tg_close(session, op, cur_price, pnl, "WEB_CLOSEALL")
                         # intentionally keeping in already_opened to prevent re-entry
@@ -2088,6 +2094,12 @@ async def main():
                             cur_price = await fetch_price(session, op['token_id'])
                             if cur_price is None:
                                 cur_price = op['entry_price']
+                                
+                            # Execute real sell order
+                            if CFG.get('REAL_MONEY_TRADE', False):
+                                log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
+                                await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
+                                
                             pnl = db_close_position(op['id'], cur_price, "WEB_MANUAL_CLOSE")
                             await tg_close(session, op, cur_price, pnl, "WEB_MANUAL_CLOSE")
                             # intentionally keeping in already_opened to prevent re-entry
