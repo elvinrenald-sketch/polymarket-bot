@@ -300,10 +300,10 @@ CFG = {
     'MAX_HOLD_HOURS'      : 24,
 
     # AI & Entry Filters — REAL TRADE MODE
-    'MIN_ML_CONFIDENCE'   : 53.0,      # Extremely high confidence required
-    'MAX_ENTRY_PRICE'     : 0.80,
-    'MIN_ENTRY_PRICE'     : 0.20,
-    'LIQUIDITY_TRAP_PRICE': 0.92,
+    'MIN_ML_CONFIDENCE'   : 40.0,      # Solid confidence required
+    'MAX_ENTRY_PRICE'     : 0.70,      # Max 0.7 as requested
+    'MIN_ENTRY_PRICE'     : 0.30,      # Min 0.3 as requested
+    'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto sell/Trap at 0.9 as requested
 
     # Signal filters — REAL TRADE (MONITOR removed: too weak for real money)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE'],
