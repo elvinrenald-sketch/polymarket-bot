@@ -213,10 +213,21 @@ async def execute_real_sell_order(token_id: str, shares: float, exit_price: floa
         from py_clob_client.clob_types import MarketOrderArgs, OrderType
         from py_clob_client.order_builder.constants import SELL
 
-        # Sell by number of shares (outcome tokens)
+        # Try to get the ABSOLUTE EXACT balance from Polymarket to avoid ANY dust issues.
+        try:
+            resp_bal = client.get_balance_allowance(token_id)
+            bal_str = resp_bal.get('balance', '0')
+            bal_float = float(bal_str) / 1_000_000.0
+            if bal_float > 0:
+                shares = bal_float
+                log.info(f"[CLOB] Wallet fetched exact balance: {shares:.6f} shares for token {token_id[:6]}")
+        except Exception as e:
+            log.warning(f"[CLOB] Could not fetch exact balance before sell: {e}")
+
+        # Sell exact tokens we have on chain
         mo = MarketOrderArgs(
             token_id=token_id,
-            amount=round(shares, 6),   # UPGRADED PRECISION: Polymarket uses 6 decimals
+            amount=round(shares, 6),
             side=SELL,
             order_type=OrderType.FOK,
         )
