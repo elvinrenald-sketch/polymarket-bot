@@ -300,16 +300,16 @@ CFG = {
     'MAX_HOLD_HOURS'      : 24,
 
     # AI & Entry Filters — REAL TRADE MODE
-    'MIN_ML_CONFIDENCE'   : 38.0,      # 38: above natural WIN base rate (34.9%), still active
+    'MIN_ML_CONFIDENCE'   : 40.0,      # Solid confidence required
     'MAX_ENTRY_PRICE'     : 0.80,
     'MIN_ENTRY_PRICE'     : 0.20,
     'LIQUIDITY_TRAP_PRICE': 0.92,
 
     # Signal filters — REAL TRADE (MONITOR removed: too weak for real money)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE'],
-    'MIN_MOMENTUM'        : 1.0,
-    'MIN_LIQUIDITY'       : 2000,
-    'MIN_VOLUME_24H'      : 1000,
+    'MIN_MOMENTUM'        : 5.0,       # High momentum only (Whale mode)
+    'MIN_LIQUIDITY'       : 5000,      # High liquidity only: avoid thin markets
+    'MIN_VOLUME_24H'      : 3000,      # High volume only: real active markets
     'MAX_DAYS_TO_EXPIRY'  : 7.0,
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
