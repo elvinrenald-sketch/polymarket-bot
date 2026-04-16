@@ -187,6 +187,48 @@ async def cancel_real_order(order_id: str) -> bool:
         log.error(f'[CLOB] Cancel failed: {e}')
         return False
 
+async def execute_real_sell_order(token_id: str, shares: float, exit_price: float) -> dict:
+    """Submit a real SELL market order to Polymarket to close a position.
+
+    Polymarket uses FOK (Fill-Or-Kill) for market sells.
+    'shares' = number of outcome tokens to sell back.
+    The CLOB will convert shares × price into USDC proceeds.
+
+    Returns:
+        dict with 'success', 'order_id', 'error'
+    """
+    if not AUTO_TRADE or not PRIVATE_KEY:
+        return {'success': False, 'error': 'AUTO_TRADE not enabled'}
+
+    client = _init_clob_client()
+    if not client:
+        return {'success': False, 'error': 'CLOB client not initialized'}
+
+    if not token_id or shares <= 0:
+        return {'success': False, 'error': f'Invalid token_id or shares={shares}'}
+
+    try:
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.order_builder.constants import SELL
+
+        # Sell by number of shares (outcome tokens)
+        mo = MarketOrderArgs(
+            token_id=token_id,
+            amount=round(shares, 4),   # shares to sell
+            side=SELL,
+            order_type=OrderType.FOK,
+        )
+        signed  = client.create_market_order(mo)
+        resp    = client.post_order(signed, OrderType.FOK)
+
+        order_id = resp.get('orderID') or resp.get('id') or 'unknown'
+        status   = resp.get('status', '')
+        log.info(f'[CLOB] SELL submitted → ID:{order_id} Status:{status} Shares:{shares:.4f}')
+        return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
+    except Exception as e:
+        log.error(f'[CLOB] SELL order failed: {e}')
+        return {'success': False, 'error': str(e)}
+
 # ══════════════════════════════════════════════════════════════════
 # KONFIGURASI
 # ══════════════════════════════════════════════════════════════════
@@ -998,6 +1040,15 @@ async def telegram_listener(session, pm):
                                     if cur_price is None:
                                         cur_price = target_op['entry_price']
                                         
+                                    # Real sell before DB close
+                                    if AUTO_TRADE and PRIVATE_KEY and target_op.get('token_id'):
+                                        sell_r = await execute_real_sell_order(
+                                            target_op['token_id'],
+                                            target_op.get('shares', 0),
+                                            cur_price
+                                        )
+                                        if not sell_r['success']:
+                                            await tg(session, f'⚠️ SELL failed: {sell_r["error"]} — DB closed anyway')
                                     pnl = db_close_position(pos_id, cur_price, "MANUAL_CLOSE")
                                     await tg_close(session, target_op, cur_price, pnl, "MANUAL_CLOSE")
                                     await pm.refresh()
@@ -1012,7 +1063,13 @@ async def telegram_listener(session, pm):
                                 cur_price = await fetch_price(session, op['token_id'])
                                 if cur_price is None:
                                     cur_price = op['entry_price']  # Fallback to a flat exit if API fails
-                                    
+                                # Real sell before DB close
+                                if AUTO_TRADE and PRIVATE_KEY and op.get('token_id'):
+                                    await execute_real_sell_order(
+                                        op['token_id'],
+                                        op.get('shares', 0),
+                                        cur_price
+                                    )
                                 pnl = db_close_position(op['id'], cur_price, "MANUAL_CLOSEALL")
                                 await tg_close(session, op, cur_price, pnl, "MANUAL_CLOSEALL")
                                 count += 1
@@ -1457,6 +1514,17 @@ class PositionManager:
                     should_close = True; close_reason = 'MARKET_RESOLVING (GHOST)'
 
             if should_close:
+                # ── REAL SELL EXECUTION (before DB write) ────────────
+                if AUTO_TRADE and PRIVATE_KEY and token_id:
+                    shares_held = pos.get('shares', 0)
+                    sell_result = await execute_real_sell_order(token_id, shares_held, exit_price)
+                    if sell_result['success']:
+                        log.info(f'[CLOB] ✅ SELL filled → #{pos["id"]} | Reason:{close_reason}')
+                    else:
+                        # Log error but still close in DB to avoid zombie positions
+                        log.error(f'[CLOB] ⚠️  SELL failed: {sell_result["error"]} '
+                                  f'— closing in DB anyway (zombie prevention)')
+                # ── CLOSE IN DB ──────────────────────────────────────
                 pnl = db_close_position(pos['id'], exit_price, close_reason)
                 await tg_close(session, pos, exit_price, pnl, close_reason)
                 closed_list.append({
