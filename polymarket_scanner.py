@@ -476,6 +476,14 @@ async def get_state():
         "scan_summary": SCAN_SUMMARY,
     }
 
+@app.get("/api/backup_db")
+async def backup_db():
+    from fastapi.responses import FileResponse
+    import os
+    if os.path.exists(DB_PATH):
+        return FileResponse(DB_PATH, media_type='application/octet-stream', filename='trades.db')
+    return {"error": "Database file not found"}
+
 @app.get("/api/debug")
 async def api_debug():
     """Debug endpoint to see raw scanner configuration and DB state"""
