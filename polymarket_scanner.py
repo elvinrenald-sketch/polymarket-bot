@@ -245,8 +245,8 @@ CFG = {
     'CLEAR_SCREEN'        : False,
 
     # Risk Management — REAL TRADE MODE
-    'BANKROLL'            : 10.00,
-    'STATS_RESET_ID'      : 82,
+    'BANKROLL'            : 10.59,     # Actual deposit amount (updated)
+    'STATS_RESET_ID'      : 317,       # Reset stats from position 317 onwards (start of real trading)
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
     'MAX_BET'             : 25.00,     # Uncapped — tiered sizing handles this
@@ -845,22 +845,30 @@ def db_get_open_positions() -> List[dict]:
         return []
 
 def db_get_open_market_ids() -> set:
-    """Gets ALL historical market IDs to prevent any re-entry, ever."""
+    """Gets market IDs of CURRENTLY OPEN positions only.
+    We do NOT block markets from historical (paper) trades,
+    so real trading can enter any valid market fresh.
+    Within one session, already_opened is extended after each entry
+    to prevent double-entry in the same scan cycle.
+    """
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT DISTINCT market_id FROM positions")
+        reset_id = CFG.get('STATS_RESET_ID', 0)
+        # Only block markets that are CURRENTLY OPEN (not historical)
+        cur.execute("SELECT DISTINCT market_id FROM positions WHERE status='OPEN' AND id > ?", (reset_id,))
         rows = cur.fetchall(); conn.close()
         return {r[0] for r in rows}
     except Exception:
         return set()
 
 def db_get_open_market_questions() -> set:
-    """Gets ALL historical questions to prevent re-entering opposite sides later."""
+    """Gets questions of CURRENTLY OPEN positions to prevent duplicate-side entry."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT DISTINCT question FROM positions")
+        reset_id = CFG.get('STATS_RESET_ID', 0)
+        cur.execute("SELECT DISTINCT question FROM positions WHERE status='OPEN' AND id > ?", (reset_id,))
         rows = cur.fetchall(); conn.close()
         return {r[0].strip() for r in rows if r[0]}
     except Exception:
@@ -1552,7 +1560,8 @@ class PositionManager:
 
         # ── REAL TRADE EXECUTION ──────────────────────────────
         if AUTO_TRADE and PRIVATE_KEY:
-            token_id = r.get('token_id', '')
+            # Use entry_token_id (the specific token for the chosen outcome)
+            token_id = r.get('entry_token_id') or r.get('token_id', '')
             if not token_id:
                 log.warning('[CLOB] ⚠️  No token_id found, skipping real order')
                 return None
