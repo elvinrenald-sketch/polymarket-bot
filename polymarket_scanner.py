@@ -247,7 +247,7 @@ CFG = {
     'CLEAR_SCREEN'        : False,
 
     # Risk Management — REAL TRADE MODE
-    'BANKROLL'            : 10.59,     # Real Polymarket wallet balance
+    'BANKROLL'            : 10.54,     # Real Polymarket wallet balance
     'STATS_RESET_ID'      : 523,       # All 394 paper trades excluded from display; brain still uses them all
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
