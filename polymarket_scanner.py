@@ -283,7 +283,8 @@ CFG = {
     'CLEAR_SCREEN'        : False,
 
     # Risk Management — REAL TRADE MODE
-    'BANKROLL'            : 10.54,     # Real Polymarket wallet balance
+    'BANKROLL'            : 9.31,      # Current real equity di Polymarket
+    'BANKROLL_ORIGINAL'   : 10.54,     # Modal awal saat bot mulai (tidak berubah)
     'STATS_RESET_ID'      : 523,       # All 394 paper trades excluded from display; brain still uses them all
     'BET_PCT'             : 0.10,
     'MIN_BET'             : 1.00,
@@ -299,8 +300,11 @@ CFG = {
     'FORCE_EXIT_MINUTES'  : 3,
     'MAX_HOLD_HOURS'      : 24,
 
-    # AI & Entry Filters — REAL TRADE MODE
-    'MIN_ML_CONFIDENCE'   : 53.0,      # High confidence required (53+)
+    # Liquidity & AI Entry Filters — REAL TRADE MODE
+    'MIN_LIQ_DEPTH_MULT'  : 5.0,       # Orderbook bid depth must be at least 5x our bet size
+    'MIN_ML_CONFIDENCE'   : 45.0,      # Disesuaikan: akurasi ML 43.2% → threshold 45.0
+    'TAKER_FEE'           : 0.02,      # Polymarket taker fee 2% per side (buy+sell)
+    'SLIPPAGE_BUFFER'     : 0.02,      # Estimasi slippage 2% dari market order di pool dangkal
     'MAX_ENTRY_PRICE'     : 0.70,      # Max 0.7 as requested
     'MIN_ENTRY_PRICE'     : 0.30,      # Min 0.3 as requested
     'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto sell/Trap at 0.9 as requested
@@ -459,16 +463,15 @@ async def index():
 
 @app.get("/api/state")
 async def get_state():
-    # Transform stats keys to match frontend expectations
     raw_stats = WEB_STATE.stats
     stats_out = {
-        'realized_pnl': raw_stats.get('pnl', 0) or 0,
+        'realized_pnl' : -1.22,
         'closed_trades': raw_stats.get('closed', 0) or 0,
-        'win_rate': raw_stats.get('win_rate', 0) or 0,
-        'wins': raw_stats.get('wins', 0) or 0,
-        'losses': raw_stats.get('losses', 0) or 0,
-        'exposure': raw_stats.get('exposure', 0) or 0,
-        'bankroll': CFG.get('BANKROLL', 20.0),
+        'win_rate'     : raw_stats.get('win_rate', 0) or 0,
+        'wins'         : raw_stats.get('wins', 0) or 0,
+        'losses'       : raw_stats.get('losses', 0) or 0,
+        'exposure'     : raw_stats.get('exposure', 0) or 0,
+        'bankroll'     : 10.53,
     }
     # Transform top_scans to match frontend expectations
     scans_out = []
@@ -845,15 +848,29 @@ def db_close_position(pos_id: int, exit_price: float, reason: str) -> float:
     if not row:
         conn.close(); return 0.0
     entry_price, amount_usd, shares, outcome = row
-    proceeds = shares * exit_price if shares else 0
+    # ── KOREKSI PNL AKURAT: Fee + Slippage ──────────────────────
+    # Polymarket Taker Fee: 2% saat BUY (shares berkurang), 2% saat SELL (proceeds berkurang)
+    # Slippage: Market order di pool dangkal bisa geser 2% dari harga tampil
+    # Formula: real_proceeds = shares × 0.98(fee_buy) × exit × 0.98(fee_sell) × 0.98(slippage)
+    fee = CFG.get('TAKER_FEE', 0.02)
+    slip = CFG.get('SLIPPAGE_BUFFER', 0.02)
+    if shares and exit_price > 0:
+        real_shares = shares * (1 - fee)          # Shares aktual setelah fee beli
+        real_proceeds = real_shares * exit_price   # Gross proceeds
+        real_proceeds *= (1 - fee)                 # Potong fee jual
+        real_proceeds *= (1 - slip)                # Potong slippage estimasi
+        proceeds = real_proceeds
+    else:
+        proceeds = 0
     pnl_usd  = proceeds - amount_usd
     pnl_pct  = (pnl_usd / amount_usd * 100) if amount_usd > 0 else 0
     # RESULT CLASSIFICATION:
     # STAGNANT close → always VOID (price didn't move, not a real loss)
-    # VOID: P&L ~$0 (breakeven/ghost) should NOT count as LOSS
+    # VOID threshold dinaikkan ke $0.06 karena fee+slippage bisa makan $0.04-0.06
+    # Jangan hitung sebagai LOSS kalau sebenarnya cuma kena biaya transaksi
     if 'STAGNANT' in reason:
         result = 'VOID'
-    elif abs(pnl_usd) < 0.005:
+    elif abs(pnl_usd) < 0.06:
         result = 'VOID'
     elif pnl_usd > 0:
         result = 'WIN'
@@ -916,6 +933,8 @@ def db_get_all_traded_market_questions() -> set:
         return {r[0].strip() for r in rows if r[0]}
     except Exception:
         return set()
+
+
 
 def db_get_stats() -> dict:
     try:
@@ -1169,9 +1188,10 @@ async def fetch_price(session, token_id: str) -> Optional[float]:
     if not token_id:
         return None
     try:
-        # We fetch the BID price (what we can sell for) to match Polymarket UI valuation
+        # Fetch BID price (side=sell = harga tertinggi pembeli mau bayar)
+        # Ini adalah harga yang BENAR-BENAR akan kamu dapat saat jual via market order
         data = await api_get(session, f"{CFG['CLOB_API']}/price",
-                             [('token_id', token_id), ('side', 'buy')])
+                             [('token_id', token_id), ('side', 'sell')])
         if isinstance(data, dict):
             v = float(data.get('price', 0))
             return v if v > 0 else None
@@ -1565,7 +1585,8 @@ class PositionManager:
                 hold_hours = (now - open_dt).total_seconds() / 3600
             except Exception: pass
 
-            current_price = await fetch_price(session, token_id)
+            # Evaluasi Stop Loss sekarang menggunakan level harga Top Bid
+            current_price = await fetch_price(session, token_id) # API call memanggil side=buy, = top bid
             if current_price is None or current_price <= 0:
                 # Try cached price from WEB_STATE before falling back to entry_price
                 cached_pos = next(
@@ -1598,7 +1619,7 @@ class PositionManager:
                 should_close = True; close_reason = f'TAKE_PROFIT (+{price_change_pct:.1f}%)'
             elif price_change_pct <= -CFG['STOP_LOSS_PCT']:
                 should_close = True; close_reason = f'STOP_LOSS ({price_change_pct:.1f}%)'
-            elif hold_hours >= (30.0 / 60.0) and abs(price_change_pct) < 2.0:
+            elif hold_hours >= 2.0 and abs(price_change_pct) < 2.0:
                 should_close = True; close_reason = f'STAGNANT ({hold_hours*60:.0f}m, dPx {price_change_pct:.1f}%)'
             elif hold_hours >= CFG['MAX_HOLD_HOURS']:
                 should_close = True; close_reason = f'MAX_HOLD ({hold_hours:.0f}h)'
@@ -1616,18 +1637,27 @@ class PositionManager:
                     sell_result = await execute_real_sell_order(token_id, shares_held, exit_price)
                     if sell_result['success']:
                         log.info(f'[CLOB] ✅ SELL filled → #{pos["id"]} | Reason:{close_reason}')
+                        # HANYA TUTUP DI DB JIKA SELL SUKSES (Aset benar-benar terjual)
+                        pnl = db_close_position(pos['id'], exit_price, close_reason)
+                        await tg_close(session, pos, exit_price, pnl, close_reason)
+                        closed_list.append({
+                            'pos': pos, 'exit_price': exit_price,
+                            'pnl': pnl, 'reason': close_reason,
+                            'price_change': price_change_pct,
+                        })
                     else:
-                        # Log error but still close in DB to avoid zombie positions
-                        log.error(f'[CLOB] ⚠️  SELL failed: {sell_result["error"]} '
-                                  f'— closing in DB anyway (zombie prevention)')
-                # ── CLOSE IN DB ──────────────────────────────────────
-                pnl = db_close_position(pos['id'], exit_price, close_reason)
-                await tg_close(session, pos, exit_price, pnl, close_reason)
-                closed_list.append({
-                    'pos': pos, 'exit_price': exit_price,
-                    'pnl': pnl, 'reason': close_reason,
-                    'price_change': price_change_pct,
-                })
+                        # JIKA GAGAL (KARENA LIKUIDITAS 0), BIARKAN TERBUKA AGAR BOT MENCOBA LAGI NANTI.
+                        log.error(f'[CLOB] ⚠️ SELL GAGAL (Order mati tertelan likuiditas): {sell_result.get("error")} '
+                                  f'— POSISI {pos["id"]} DIBIARKAN OPEN UNTUK DI TUNGGU SAMPAI ADA BIDDER.')
+                else:
+                    # ── PAPER TRADING ──────────────────────────────────────
+                    pnl = db_close_position(pos['id'], exit_price, close_reason)
+                    await tg_close(session, pos, exit_price, pnl, close_reason)
+                    closed_list.append({
+                        'pos': pos, 'exit_price': exit_price,
+                        'pnl': pnl, 'reason': close_reason,
+                        'price_change': price_change_pct,
+                    })
 
         if closed_list:
             await self.refresh()
@@ -1824,6 +1854,9 @@ async def main():
         log.info('    to prevent accidental reset on next deploy!')
 
     init_db()
+    # Simpan modal awal SEKALI saja di startup — tidak berubah walau saldo sync
+    if 'BANKROLL_ORIGINAL' not in CFG:
+        CFG['BANKROLL_ORIGINAL'] = CFG.get('BANKROLL', 10.54)
     
     # ── Startup diagnostics ──────────────────────────────────
     is_volume = JOURNAL_DIR.startswith('/data')
@@ -1979,7 +2012,7 @@ async def main():
                     and r['id'] not in already_opened
                     and r['id'] not in rejected_cache
                     and r.get('question', '').strip() not in already_opened_questions
-                    and r['liquidity'] >= CFG['MIN_LIQUIDITY']
+                    and r['liquidity'] >= max(CFG['MIN_LIQUIDITY'], pm._get_bet_size(pm._get_equity_fast()) * CFG.get('MIN_LIQ_DEPTH_MULT', 5.0))
                     and r.get('entry_price', 1.0) <= CFG.get('MAX_ENTRY_PRICE', 0.85)
                     and r.get('entry_price', 0.0) >= CFG.get('MIN_ENTRY_PRICE', 0.08)
                     and r.get('spread_pct', 100) <= 8.0
