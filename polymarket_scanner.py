@@ -1585,10 +1585,10 @@ class PositionManager:
                 hold_hours = (now - open_dt).total_seconds() / 3600
             except Exception: pass
 
-            # Evaluasi Stop Loss sekarang menggunakan level harga Top Bid
-            current_price = await fetch_price(session, token_id) # API call memanggil side=buy, = top bid
+            # Evaluasi harga posisi via BID price (side=sell)
+            current_price = await fetch_price(session, token_id)
             if current_price is None or current_price <= 0:
-                # Try cached price from WEB_STATE before falling back to entry_price
+                # Try cached price from WEB_STATE (fast polling setiap 3 detik)
                 cached_pos = next(
                     (p for p in getattr(WEB_STATE, 'positions', [])
                      if p['pos'].get('id') == pos['id']), None
@@ -1596,7 +1596,11 @@ class PositionManager:
                 if cached_pos and cached_pos.get('live_price', 0) > 0:
                     current_price = cached_pos['live_price']
                 else:
-                    current_price = entry_price
+                    # JANGAN fallback ke entry_price! Itu membunuh Stop Loss.
+                    # Skip posisi ini, cek lagi di cycle berikutnya.
+                    log.warning(f"[SL GUARD] Harga tidak tersedia untuk #{pos['id']} — SKIP cycle ini. "
+                                f"TIDAK fallback ke entry_price agar Stop Loss tidak mati.")
+                    continue
 
             price_change_pct = 0.0
             if entry_price > 0:
@@ -2289,15 +2293,45 @@ async def main():
                         fast_poses = []
                         for open_pos in pm.open_positions:
                             tid = open_pos.get('token_id', '')
+                            ep = open_pos['entry_price']
                             # Fallback to last known price if this specific token is missing
                             old_p = next((p for p in getattr(WEB_STATE, 'positions', []) if p['pos'].get('id') == open_pos.get('id')), None)
                             cp = price_map.get(tid)
                             if cp and cp > 0:
-                                pl = (cp - open_pos['entry_price']) * open_pos.get('shares', 0)
+                                pl = (cp - ep) * open_pos.get('shares', 0)
                             else:
-                                cp = old_p['live_price'] if old_p and old_p.get('live_price', 0) > 0 else open_pos['entry_price']
+                                cp = old_p['live_price'] if old_p and old_p.get('live_price', 0) > 0 else ep
                                 pl = old_p['pnl'] if old_p else 0
                             fast_poses.append({"pos": open_pos, "live_price": cp, "pnl": pl})
+
+                            # ── FAST STOP LOSS CHECK (setiap 3 detik) ─────────────
+                            # Jangan tunggu full scan (10 detik) untuk cek stop loss.
+                            # Jika harga sudah jatuh lebih dari STOP_LOSS_PCT, trigger close SEGERA.
+                            if cp and cp > 0 and ep > 0:
+                                fast_change_pct = (cp - ep) / ep * 100
+                                if fast_change_pct <= -CFG['STOP_LOSS_PCT']:
+                                    log.warning(f"[FAST SL] ⚡ STOP LOSS TRIGGERED di fast-poll! "
+                                                f"Pos #{open_pos['id']} | Price:{cp:.4f} vs Entry:{ep:.4f} | "
+                                                f"Drop:{fast_change_pct:.1f}% (limit:{-CFG['STOP_LOSS_PCT']}%)")
+                                    try:
+                                        shares_held = open_pos.get('shares', 0)
+                                        token = open_pos.get('token_id', '')
+                                        if AUTO_TRADE and PRIVATE_KEY and token:
+                                            sell_r = await execute_real_sell_order(token, shares_held, cp)
+                                            if sell_r['success']:
+                                                pnl = db_close_position(open_pos['id'], cp, f'FAST_STOP_LOSS ({fast_change_pct:.1f}%)')
+                                                await tg_close(session, open_pos, cp, pnl, f'FAST_STOP_LOSS ({fast_change_pct:.1f}%)')
+                                                log.info(f"[FAST SL] ✅ Pos #{open_pos['id']} closed via fast stop loss")
+                                                await pm.refresh()
+                                            else:
+                                                sell_err = sell_r.get('error', '')
+                                                if 'No orderbook exists' in sell_err or 'status_code=404' in sell_err:
+                                                    pnl = db_close_position(open_pos['id'], 0.0, 'MARKET_DEAD (FAST_SL)')
+                                                    await tg_close(session, open_pos, 0.0, pnl, 'MARKET_DEAD (FAST_SL)')
+                                                    await pm.refresh()
+                                    except Exception as sl_e:
+                                        log.error(f"[FAST SL] Error closing #{open_pos['id']}: {sl_e}")
+
                         if fast_poses:
                             WEB_STATE.positions = fast_poses
                     except Exception:
