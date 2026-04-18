@@ -190,11 +190,12 @@ async def cancel_real_order(order_id: str) -> bool:
         return False
 
 async def execute_real_sell_order(token_id: str, shares: float, exit_price: float) -> dict:
-    """Submit a real SELL market order to Polymarket to close a position.
+    """Submit a real SELL market order to Polymarket with AGGRESSIVE RETRY.
 
-    Polymarket uses FOK (Fill-Or-Kill) for market sells.
-    'shares' = number of outcome tokens to sell back.
-    The CLOB will convert shares × price into USDC proceeds.
+    FOK (Fill-Or-Kill) fails if no buyers exist on orderbook.
+    This function retries up to 3 times with 2-second delays to catch
+    momentary liquidity gaps. If all retries fail, returns failure
+    so caller can track via SELL_FAIL_COUNTER and force-close.
 
     Returns:
         dict with 'success', 'order_id', 'error'
@@ -209,63 +210,71 @@ async def execute_real_sell_order(token_id: str, shares: float, exit_price: floa
     if not token_id or shares <= 0:
         return {'success': False, 'error': f'Invalid token_id or shares={shares}'}
 
+    from py_clob_client.clob_types import MarketOrderArgs, OrderType
+    from py_clob_client.order_builder.constants import SELL
+
+    # Try to get the ABSOLUTE EXACT balance from Polymarket to avoid ANY dust issues.
     try:
-        from py_clob_client.clob_types import MarketOrderArgs, OrderType
-        from py_clob_client.order_builder.constants import SELL
-
-        # Try to get the ABSOLUTE EXACT balance from Polymarket to avoid ANY dust issues.
-        try:
-            resp_bal = client.get_balance_allowance(token_id)
-            bal_str = resp_bal.get('balance', '0')
-            bal_float = float(bal_str) / 1_000_000.0
-            if bal_float > 0:
-                shares = bal_float
-                log.info(f"[CLOB] Wallet fetched exact balance: {shares:.6f} shares for token {token_id[:6]}")
-        except Exception as e:
-            log.warning(f"[CLOB] Could not fetch exact balance before sell: {e}")
-
-        # Sell exact tokens we have on chain
-        mo = MarketOrderArgs(
-            token_id=token_id,
-            amount=round(shares, 6),
-            side=SELL,
-            order_type=OrderType.FOK,
-        )
-        signed  = client.create_market_order(mo)
-        resp    = client.post_order(signed, OrderType.FOK)
-
-        order_id = resp.get('orderID') or resp.get('id') or 'unknown'
-        status   = resp.get('status', '')
-        log.info(f'[CLOB] SELL submitted → ID:{order_id} Status:{status} Shares:{shares:.4f}')
-        return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
+        resp_bal = client.get_balance_allowance(token_id)
+        bal_str = resp_bal.get('balance', '0')
+        bal_float = float(bal_str) / 1_000_000.0
+        if bal_float > 0:
+            shares = bal_float
+            log.info(f"[CLOB] Wallet fetched exact balance: {shares:.6f} shares for token {token_id[:6]}")
+        elif bal_float == 0:
+            log.warning(f"[CLOB] On-chain balance = 0 for token {token_id[:6]}. Shares already sold or resolved.")
+            return {'success': True, 'order_id': 'balance_zero', 'status': 'ALREADY_SOLD'}
     except Exception as e:
-        err_msg = str(e)
-        if "the balance is not enough -> balance:" in err_msg:
-            try:
-                import re
-                match = re.search(r'balance:\s*(\d+)', err_msg)
-                if match:
-                    # PM stores outcome tokens with 6 decimals
-                    real_shares = float(match.group(1)) / 1_000_000.0
-                    if real_shares > 0:
-                        log.warning(f"[CLOB] Share mismatch. Retrying sell with exact on-chain balance: {real_shares:.6f}")
-                        mo = MarketOrderArgs(
-                            token_id=token_id,
-                            amount=real_shares,
-                            side=SELL,
-                            order_type=OrderType.FOK,
-                        )
-                        signed  = client.create_market_order(mo)
-                        resp    = client.post_order(signed, OrderType.FOK)
-                        order_id = resp.get('orderID') or resp.get('id') or 'unknown'
-                        status   = resp.get('status', '')
-                        log.info(f'[CLOB] SELL submitted (Retry) → ID:{order_id} Status:{status} Shares:{real_shares:.6f}')
-                        return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
-            except Exception as retry_e:
-                log.error(f'[CLOB] Retry SELL order failed: {retry_e}')
-                
-        log.error(f'[CLOB] SELL order failed: {e}')
-        return {'success': False, 'error': str(e)}
+        log.warning(f"[CLOB] Could not fetch exact balance before sell: {e}")
+
+    last_error = ''
+    MAX_IMMEDIATE_RETRIES = 3
+
+    for attempt in range(1, MAX_IMMEDIATE_RETRIES + 1):
+        try:
+            mo = MarketOrderArgs(
+                token_id=token_id,
+                amount=round(shares, 6),
+                side=SELL,
+                order_type=OrderType.FOK,
+            )
+            signed = client.create_market_order(mo)
+            resp = client.post_order(signed, OrderType.FOK)
+
+            order_id = resp.get('orderID') or resp.get('id') or 'unknown'
+            status = resp.get('status', '')
+            log.info(f'[CLOB] SELL submitted (attempt {attempt}) → ID:{order_id} Status:{status} Shares:{shares:.4f}')
+            return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
+
+        except Exception as e:
+            last_error = str(e)
+            # Check for balance mismatch error — fix shares and retry immediately
+            if "the balance is not enough -> balance:" in last_error:
+                try:
+                    match = re.search(r'balance:\s*(\d+)', last_error)
+                    if match:
+                        real_shares = float(match.group(1)) / 1_000_000.0
+                        if real_shares > 0:
+                            shares = real_shares
+                            log.warning(f"[CLOB] Share mismatch. Fixed to {real_shares:.6f}, retrying...")
+                            continue
+                        else:
+                            log.warning(f"[CLOB] On-chain balance = 0. Shares already sold.")
+                            return {'success': True, 'order_id': 'balance_zero', 'status': 'ALREADY_SOLD'}
+                except Exception:
+                    pass
+
+            # Fatal errors — don't retry
+            if 'No orderbook exists' in last_error or 'status_code=404' in last_error:
+                log.error(f'[CLOB] FATAL: Orderbook dead. No retry. Error: {last_error}')
+                return {'success': False, 'error': last_error}
+
+            log.warning(f'[CLOB] SELL attempt {attempt}/{MAX_IMMEDIATE_RETRIES} failed: {last_error}')
+            if attempt < MAX_IMMEDIATE_RETRIES:
+                await asyncio.sleep(2)  # Wait 2 seconds before retry
+
+    log.error(f'[CLOB] SELL FAILED after {MAX_IMMEDIATE_RETRIES} attempts: {last_error}')
+    return {'success': False, 'error': last_error}
 
 # ══════════════════════════════════════════════════════════════════
 # KONFIGURASI
@@ -428,6 +437,8 @@ class GlobalState:
 BRAIN_LEARNING = False  # Global flag for frontend Singularity animation
 LAST_DECISIONS = []     # Recent APPROVED/REJECTED decisions for UI
 SCAN_SUMMARY = {'total': 0, 'passed': 0, 'rejected_reasons': {}}  # Per-scan summary
+SELL_FAIL_COUNTER: Dict[int, int] = {}  # pos_id → how many times sell failed. Force close at 5.
+MAX_SELL_RETRIES = 5  # After 5 failed sell cycles (~50 seconds), FORCE CLOSE in DB
 WEB_STATE = GlobalState()
 WS_CLIENTS: List[WebSocket] = []
 
@@ -1652,8 +1663,6 @@ class PositionManager:
                     else:
                         sell_error = sell_result.get('error', '')
                         # ── DETEKSI MARKET SUDAH MATI/RESOLVED ──────────────
-                        # Jika orderbook sudah dihapus Polymarket (404), shares kita HANGUS.
-                        # JANGAN PERNAH menunggu bidder yang tidak akan datang.
                         market_dead = (
                             'No orderbook exists' in sell_error or
                             'status_code=404' in sell_error or
@@ -1661,19 +1670,34 @@ class PositionManager:
                             'not tradeable' in sell_error.lower()
                         )
                         if market_dead:
-                            log.error(f'[CLOB] 💀 MARKET MATI — Orderbook dihapus Polymarket. '
-                                      f'Posisi #{pos["id"]} FORCE CLOSE dengan TOTAL LOSS.')
+                            log.error(f'[CLOB] 💀 MARKET MATI — Posisi #{pos["id"]} FORCE CLOSE.')
                             pnl = db_close_position(pos['id'], 0.0, f'MARKET_DEAD ({close_reason})')
                             await tg_close(session, pos, 0.0, pnl, f'MARKET_DEAD ({close_reason})')
+                            SELL_FAIL_COUNTER.pop(pos['id'], None)
                             closed_list.append({
                                 'pos': pos, 'exit_price': 0.0,
                                 'pnl': pnl, 'reason': f'MARKET_DEAD ({close_reason})',
                                 'price_change': -100.0,
                             })
                         else:
-                            # Error lain (sementara): coba lagi di cycle berikutnya
-                            log.error(f'[CLOB] ⚠️ SELL GAGAL (sementara): {sell_error} '
-                                      f'— POSISI {pos["id"]} akan dicoba lagi cycle berikutnya.')
+                            # ── SELL FAILURE COUNTER ──────────────────────────
+                            # Track failed sell attempts. After MAX_SELL_RETRIES, FORCE CLOSE.
+                            fail_count = SELL_FAIL_COUNTER.get(pos['id'], 0) + 1
+                            SELL_FAIL_COUNTER[pos['id']] = fail_count
+                            log.error(f'[CLOB] ⚠️ SELL GAGAL ({fail_count}/{MAX_SELL_RETRIES}): {sell_error} '
+                                      f'— POSISI #{pos["id"]}')
+
+                            if fail_count >= MAX_SELL_RETRIES:
+                                log.error(f'[CLOB] 🚨 MAX SELL RETRIES REACHED ({fail_count}x gagal). '
+                                          f'FORCE CLOSE posisi #{pos["id"]} di harga terakhir {exit_price:.4f}')
+                                pnl = db_close_position(pos['id'], exit_price, f'SELL_EXHAUSTED ({close_reason})')
+                                await tg_close(session, pos, exit_price, pnl, f'SELL_EXHAUSTED ({close_reason})')
+                                SELL_FAIL_COUNTER.pop(pos['id'], None)
+                                closed_list.append({
+                                    'pos': pos, 'exit_price': exit_price,
+                                    'pnl': pnl, 'reason': f'SELL_EXHAUSTED ({close_reason})',
+                                    'price_change': price_change_pct,
+                                })
                 else:
                     # ── PAPER TRADING ──────────────────────────────────────
                     pnl = db_close_position(pos['id'], exit_price, close_reason)
@@ -2316,21 +2340,39 @@ async def main():
                                     try:
                                         shares_held = open_pos.get('shares', 0)
                                         token = open_pos.get('token_id', '')
+                                        pos_id = open_pos.get('id', 0)
                                         if AUTO_TRADE and PRIVATE_KEY and token:
                                             sell_r = await execute_real_sell_order(token, shares_held, cp)
                                             if sell_r['success']:
-                                                pnl = db_close_position(open_pos['id'], cp, f'FAST_STOP_LOSS ({fast_change_pct:.1f}%)')
+                                                pnl = db_close_position(pos_id, cp, f'FAST_STOP_LOSS ({fast_change_pct:.1f}%)')
                                                 await tg_close(session, open_pos, cp, pnl, f'FAST_STOP_LOSS ({fast_change_pct:.1f}%)')
-                                                log.info(f"[FAST SL] ✅ Pos #{open_pos['id']} closed via fast stop loss")
+                                                log.info(f"[FAST SL] ✅ Pos #{pos_id} closed via fast stop loss")
+                                                SELL_FAIL_COUNTER.pop(pos_id, None)
                                                 await pm.refresh()
                                             else:
                                                 sell_err = sell_r.get('error', '')
-                                                if 'No orderbook exists' in sell_err or 'status_code=404' in sell_err:
-                                                    pnl = db_close_position(open_pos['id'], 0.0, 'MARKET_DEAD (FAST_SL)')
+                                                market_dead = (
+                                                    'No orderbook exists' in sell_err or
+                                                    'status_code=404' in sell_err
+                                                )
+                                                if market_dead:
+                                                    pnl = db_close_position(pos_id, 0.0, 'MARKET_DEAD (FAST_SL)')
                                                     await tg_close(session, open_pos, 0.0, pnl, 'MARKET_DEAD (FAST_SL)')
+                                                    SELL_FAIL_COUNTER.pop(pos_id, None)
                                                     await pm.refresh()
+                                                else:
+                                                    # Track sell failure — force close after MAX_SELL_RETRIES
+                                                    fc = SELL_FAIL_COUNTER.get(pos_id, 0) + 1
+                                                    SELL_FAIL_COUNTER[pos_id] = fc
+                                                    log.error(f"[FAST SL] ⚠️ SELL GAGAL ({fc}/{MAX_SELL_RETRIES}) Pos #{pos_id}")
+                                                    if fc >= MAX_SELL_RETRIES:
+                                                        log.error(f"[FAST SL] 🚨 FORCE CLOSE #{pos_id} setelah {fc}x gagal jual")
+                                                        pnl = db_close_position(pos_id, cp, f'SELL_EXHAUSTED (FAST_SL {fast_change_pct:.1f}%)')
+                                                        await tg_close(session, open_pos, cp, pnl, f'SELL_EXHAUSTED (FAST_SL)')
+                                                        SELL_FAIL_COUNTER.pop(pos_id, None)
+                                                        await pm.refresh()
                                     except Exception as sl_e:
-                                        log.error(f"[FAST SL] Error closing #{open_pos['id']}: {sl_e}")
+                                        log.error(f"[FAST SL] Error closing #{open_pos.get('id', '?')}: {sl_e}")
 
                         if fast_poses:
                             WEB_STATE.positions = fast_poses
