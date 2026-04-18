@@ -302,10 +302,10 @@ CFG = {
 
     # Liquidity & AI Entry Filters — REAL TRADE MODE
     'MIN_LIQ_DEPTH_MULT'  : 5.0,       # Orderbook bid depth must be at least 5x our bet size
-    'MIN_ML_CONFIDENCE'   : 45.0,      # Disesuaikan: akurasi ML 43.2% → threshold 45.0
+    'MIN_ML_CONFIDENCE'   : 58.0,      # ML 60% weight, accuracy 43.2% → threshold 58 agar filter ketat
     'TAKER_FEE'           : 0.02,      # Polymarket taker fee 2% per side (buy+sell)
     'SLIPPAGE_BUFFER'     : 0.02,      # Estimasi slippage 2% dari market order di pool dangkal
-    'MAX_ENTRY_PRICE'     : 0.70,      # Max 0.7 as requested
+    'MAX_ENTRY_PRICE'     : 0.65,      # Max 0.65 — menghindari harga terlalu mahal
     'MIN_ENTRY_PRICE'     : 0.30,      # Min 0.3 as requested
     'LIQUIDITY_TRAP_PRICE': 0.90,      # Auto sell/Trap at 0.9 as requested
 
@@ -1646,9 +1646,30 @@ class PositionManager:
                             'price_change': price_change_pct,
                         })
                     else:
-                        # JIKA GAGAL (KARENA LIKUIDITAS 0), BIARKAN TERBUKA AGAR BOT MENCOBA LAGI NANTI.
-                        log.error(f'[CLOB] ⚠️ SELL GAGAL (Order mati tertelan likuiditas): {sell_result.get("error")} '
-                                  f'— POSISI {pos["id"]} DIBIARKAN OPEN UNTUK DI TUNGGU SAMPAI ADA BIDDER.')
+                        sell_error = sell_result.get('error', '')
+                        # ── DETEKSI MARKET SUDAH MATI/RESOLVED ──────────────
+                        # Jika orderbook sudah dihapus Polymarket (404), shares kita HANGUS.
+                        # JANGAN PERNAH menunggu bidder yang tidak akan datang.
+                        market_dead = (
+                            'No orderbook exists' in sell_error or
+                            'status_code=404' in sell_error or
+                            'market not found' in sell_error.lower() or
+                            'not tradeable' in sell_error.lower()
+                        )
+                        if market_dead:
+                            log.error(f'[CLOB] 💀 MARKET MATI — Orderbook dihapus Polymarket. '
+                                      f'Posisi #{pos["id"]} FORCE CLOSE dengan TOTAL LOSS.')
+                            pnl = db_close_position(pos['id'], 0.0, f'MARKET_DEAD ({close_reason})')
+                            await tg_close(session, pos, 0.0, pnl, f'MARKET_DEAD ({close_reason})')
+                            closed_list.append({
+                                'pos': pos, 'exit_price': 0.0,
+                                'pnl': pnl, 'reason': f'MARKET_DEAD ({close_reason})',
+                                'price_change': -100.0,
+                            })
+                        else:
+                            # Error lain (sementara): coba lagi di cycle berikutnya
+                            log.error(f'[CLOB] ⚠️ SELL GAGAL (sementara): {sell_error} '
+                                      f'— POSISI {pos["id"]} akan dicoba lagi cycle berikutnya.')
                 else:
                     # ── PAPER TRADING ──────────────────────────────────────
                     pnl = db_close_position(pos['id'], exit_price, close_reason)
