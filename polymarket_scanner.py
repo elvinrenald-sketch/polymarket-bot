@@ -303,14 +303,14 @@ CFG = {
 
 
     # Auto-Close — Real Trade timing
-    'TAKE_PROFIT_PCT'     : 35.0,
-    'STOP_LOSS_PCT'       : 20.0,
+    'TAKE_PROFIT_PCT'     : 30.0,      # TP 30% — 1 win menutupi 2 loss
+    'STOP_LOSS_PCT'       : 15.0,      # SL 15% — dengan slippage ~18-22% aktual
     'TIME_EXIT_MINUTES'   : 45,
     'FORCE_EXIT_MINUTES'  : 20,     # Force close 20 menit sebelum resolusi agar masih ada likuiditas
     'MAX_HOLD_HOURS'      : 24,
 
     # Liquidity & AI Entry Filters — REAL TRADE MODE
-    'MIN_LIQ_DEPTH_MULT'  : 5.0,       # Orderbook bid depth must be at least 5x our bet size
+    'MIN_LIQ_DEPTH_MULT'  : 10.0,      # Orderbook bid depth 10x bet size — cegah slippage SL parah
     'MIN_ML_CONFIDENCE'   : 58.0,      # ML 60% weight, accuracy 43.2% → threshold 58 agar filter ketat
     'TAKER_FEE'           : 0.02,      # Polymarket taker fee 2% per side (buy+sell)
     'SLIPPAGE_BUFFER'     : 0.02,      # Estimasi slippage 2% dari market order di pool dangkal
