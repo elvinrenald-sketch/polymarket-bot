@@ -297,7 +297,7 @@ CFG = {
     'TAKE_PROFIT_PCT'     : 35.0,
     'STOP_LOSS_PCT'       : 20.0,
     'TIME_EXIT_MINUTES'   : 45,
-    'FORCE_EXIT_MINUTES'  : 3,
+    'FORCE_EXIT_MINUTES'  : 20,     # Force close 20 menit sebelum resolusi agar masih ada likuiditas
     'MAX_HOLD_HOURS'      : 24,
 
     # Liquidity & AI Entry Filters — REAL TRADE MODE
