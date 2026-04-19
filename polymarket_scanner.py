@@ -372,7 +372,7 @@ CFG = {
     'MAX_HOLD_HOURS'      : 24,
 
     # Liquidity & AI Entry Filters — REAL TRADE MODE
-    'MIN_LIQ_DEPTH_MULT'  : 500.0,     # Orderbook bid depth 500x bet size ($500 absolute min for $1 bet)
+    'MIN_LIQ_DEPTH_MULT'  : 2000.0,    # Orderbook bid depth 2000x bet ($2000 min for $1 bet) — ZERO slippage
     'MIN_ML_CONFIDENCE'   : 60.0,      # ML confidence threshold 60%
     'TAKER_FEE'           : 0.02,      # Polymarket taker fee 2% per side (buy+sell)
     'SLIPPAGE_BUFFER'     : 0.02,      # Estimasi slippage 2% dari market order di pool dangkal
@@ -383,8 +383,8 @@ CFG = {
     # Signal filters — REAL TRADE (MONITOR removed: too weak for real money)
     'AUTO_OPEN_SIGNALS'   : ['STRONG BUY', 'ARBITRAGE', 'BUY', 'EDGE'],
     'MIN_MOMENTUM'        : 5.0,       # High momentum only (Whale mode)
-    'MIN_LIQUIDITY'       : 5000,      # High liquidity only: avoid thin markets
-    'MIN_VOLUME_24H'      : 3000,      # High volume only: real active markets
+    'MIN_LIQUIDITY'       : 30000,     # Whale-grade: only markets with $30k+ total liquidity
+    'MIN_VOLUME_24H'      : 15000,     # Whale-grade: only markets with $15k+ daily volume
     'MAX_DAYS_TO_EXPIRY'  : 7.0,
     'VOL_SPIKE_RATIO'     : 3.0,
     'NEAR_RES_HOURS'      : 6,
@@ -2304,10 +2304,15 @@ async def main():
                         
                         # Execute real sell order
                         log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
-                        await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
-                            
-                        pnl = db_close_position(op['id'], cur_price, "WEB_CLOSEALL")
-                        await tg_close(session, op, cur_price, pnl, "WEB_CLOSEALL")
+                        sell_r = await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
+                        
+                        if sell_r['success']:
+                            pnl = db_close_position(op['id'], cur_price, "WEB_CLOSEALL")
+                            await tg_close(session, op, cur_price, pnl, "WEB_CLOSEALL")
+                            log.info(f"[WEB UI] ✅ Pos #{op['id']} closed via CLOSE ALL")
+                        else:
+                            log.error(f"[WEB UI] ❌ SELL FAILED for #{op['id']}: {sell_r.get('error','')}. "
+                                      f"Position NOT closed in DB — will retry next cycle.")
                         # intentionally keeping in already_opened to prevent re-entry
                     await pm.refresh()
                     WEB_TRIGGER_CLOSE_ALL = False
@@ -2326,11 +2331,16 @@ async def main():
                             log.info(f"[WEB UI] Sending CLOB Sell order for {op['shares']} shares of {op['token_id']}")
                             res = await execute_real_sell_order(op['token_id'], op['shares'], cur_price)
                             log.info(f"[WEB UI] CLOB output: {res}")
-                                
-                            pnl = db_close_position(op['id'], cur_price, "WEB_MANUAL_CLOSE")
-                            await tg_close(session, op, cur_price, pnl, "WEB_MANUAL_CLOSE")
+                            
+                            if res['success']:
+                                pnl = db_close_position(op['id'], cur_price, "WEB_MANUAL_CLOSE")
+                                await tg_close(session, op, cur_price, pnl, "WEB_MANUAL_CLOSE")
+                                closed_any = True
+                                log.info(f"[WEB UI] ✅ Pos #{op['id']} manually closed")
+                            else:
+                                log.error(f"[WEB UI] ❌ MANUAL SELL FAILED for #{op['id']}: {res.get('error','')}. "
+                                          f"Position NOT closed in DB.")
                             # intentionally keeping in already_opened to prevent re-entry
-                            closed_any = True
                     if closed_any:
                         await pm.refresh()
                     WEB_TRIGGER_CLOSE_POS_IDS.clear()
