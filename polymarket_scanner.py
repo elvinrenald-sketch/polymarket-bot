@@ -190,12 +190,17 @@ async def cancel_real_order(order_id: str) -> bool:
         return False
 
 async def execute_real_sell_order(token_id: str, shares: float, exit_price: float) -> dict:
-    """Submit a real SELL market order to Polymarket with AGGRESSIVE RETRY.
+    """Submit a real SELL order to Polymarket with VERIFIED FILL CHECK.
 
-    FOK (Fill-Or-Kill) fails if no buyers exist on orderbook.
-    This function retries up to 3 times with 2-second delays to catch
-    momentary liquidity gaps. If all retries fail, returns failure
-    so caller can track via SELL_FAIL_COUNTER and force-close.
+    CRITICAL: Previous versions NEVER checked if the order actually FILLED.
+    Polymarket returns status="matched" on success, status="dead" on failure.
+    We MUST check this, otherwise DB closes position but shares stay on-chain.
+
+    Strategy:
+    1. Try FAK (Fill-and-Kill) first — allows partial fills
+    2. CHECK status == "matched" — only success if actually filled
+    3. VERIFY on-chain balance after sell — confirm shares really gone
+    4. Retry up to 3 times with 2-second delays
 
     Returns:
         dict with 'success', 'order_id', 'error'
@@ -213,42 +218,99 @@ async def execute_real_sell_order(token_id: str, shares: float, exit_price: floa
     from py_clob_client.clob_types import MarketOrderArgs, OrderType
     from py_clob_client.order_builder.constants import SELL
 
-    # Try to get the ABSOLUTE EXACT balance from Polymarket to avoid ANY dust issues.
+    # ── STEP 1: Get exact on-chain balance ────────────────────────
     try:
         resp_bal = client.get_balance_allowance(token_id)
         bal_str = resp_bal.get('balance', '0')
         bal_float = float(bal_str) / 1_000_000.0
         if bal_float > 0:
             shares = bal_float
-            log.info(f"[CLOB] Wallet fetched exact balance: {shares:.6f} shares for token {token_id[:6]}")
+            log.info(f"[CLOB] Wallet exact balance: {shares:.6f} shares for token {token_id[:6]}")
         elif bal_float == 0:
-            log.warning(f"[CLOB] On-chain balance = 0 for token {token_id[:6]}. Shares already sold or resolved.")
+            log.warning(f"[CLOB] On-chain balance = 0 for {token_id[:6]}. Already sold/resolved.")
             return {'success': True, 'order_id': 'balance_zero', 'status': 'ALREADY_SOLD'}
     except Exception as e:
-        log.warning(f"[CLOB] Could not fetch exact balance before sell: {e}")
+        log.warning(f"[CLOB] Could not fetch balance before sell: {e}")
 
     last_error = ''
     MAX_IMMEDIATE_RETRIES = 3
 
+    # ── STEP 2: Try selling with FAK (partial fill OK) ────────────
     for attempt in range(1, MAX_IMMEDIATE_RETRIES + 1):
         try:
+            # Use FAK (Fill-and-Kill) instead of FOK:
+            # FAK sells whatever it can and cancels the rest.
+            # FOK is all-or-nothing and returns "dead" if can't fill 100%.
             mo = MarketOrderArgs(
                 token_id=token_id,
                 amount=round(shares, 6),
                 side=SELL,
-                order_type=OrderType.FOK,
+                order_type=OrderType.FAK,
             )
             signed = client.create_market_order(mo)
-            resp = client.post_order(signed, OrderType.FOK)
+            resp = client.post_order(signed, OrderType.FAK)
 
             order_id = resp.get('orderID') or resp.get('id') or 'unknown'
-            status = resp.get('status', '')
-            log.info(f'[CLOB] SELL submitted (attempt {attempt}) → ID:{order_id} Status:{status} Shares:{shares:.4f}')
-            return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
+            status = (resp.get('status') or '').lower()
+
+            log.info(f'[CLOB] SELL attempt {attempt} → ID:{order_id} Status:{status} '
+                     f'Shares:{shares:.4f} Response:{resp}')
+
+            # ── STEP 3: CHECK IF ORDER WAS ACTUALLY FILLED ────────
+            if status == 'matched':
+                log.info(f'[CLOB] ✅ SELL CONFIRMED MATCHED → {shares:.4f} shares sold')
+
+                # ── STEP 4: VERIFY on-chain balance is now 0 ──────
+                try:
+                    await asyncio.sleep(1)  # Wait for blockchain settlement
+                    verify_bal = client.get_balance_allowance(token_id)
+                    remaining = float(verify_bal.get('balance', '0')) / 1_000_000.0
+                    if remaining > 0.001:  # Still have shares (more than dust)
+                        log.warning(f'[CLOB] ⚠️ Post-sell balance still {remaining:.6f}. '
+                                    f'Partial fill — will retry remaining.')
+                        shares = remaining
+                        continue  # Try to sell the remainder
+                    else:
+                        log.info(f'[CLOB] ✅ VERIFIED: On-chain balance = {remaining:.6f} (clean)')
+                except Exception as ve:
+                    log.warning(f'[CLOB] Could not verify post-sell balance: {ve}')
+
+                return {'success': True, 'order_id': order_id, 'status': status, 'raw': resp}
+
+            elif status in ('dead', 'cancelled', 'expired', 'unmatched', ''):
+                # ORDER WAS NOT FILLED — this is the bug we're fixing!
+                last_error = f'Order status={status} (NOT filled, no buyers)'
+                log.warning(f'[CLOB] ❌ SELL NOT FILLED (attempt {attempt}): {last_error}')
+                if attempt < MAX_IMMEDIATE_RETRIES:
+                    await asyncio.sleep(2)
+                continue
+
+            else:
+                # Unknown status — verify balance to be sure
+                log.warning(f'[CLOB] Unknown status "{status}", verifying balance...')
+                try:
+                    await asyncio.sleep(1)
+                    verify_bal = client.get_balance_allowance(token_id)
+                    remaining = float(verify_bal.get('balance', '0')) / 1_000_000.0
+                    if remaining < 0.001:
+                        log.info(f'[CLOB] ✅ Balance verified 0 despite unknown status. Sell OK.')
+                        return {'success': True, 'order_id': order_id, 'status': 'verified_sold'}
+                    else:
+                        last_error = f'Unknown status={status}, balance still {remaining:.6f}'
+                        log.warning(f'[CLOB] ⚠️ {last_error}')
+                        shares = remaining
+                        if attempt < MAX_IMMEDIATE_RETRIES:
+                            await asyncio.sleep(2)
+                        continue
+                except Exception:
+                    last_error = f'Unknown status={status}, could not verify'
+                    if attempt < MAX_IMMEDIATE_RETRIES:
+                        await asyncio.sleep(2)
+                    continue
 
         except Exception as e:
             last_error = str(e)
-            # Check for balance mismatch error — fix shares and retry immediately
+            # Check for balance mismatch error
             if "the balance is not enough -> balance:" in last_error:
                 try:
                     match = re.search(r'balance:\s*(\d+)', last_error)
@@ -256,22 +318,22 @@ async def execute_real_sell_order(token_id: str, shares: float, exit_price: floa
                         real_shares = float(match.group(1)) / 1_000_000.0
                         if real_shares > 0:
                             shares = real_shares
-                            log.warning(f"[CLOB] Share mismatch. Fixed to {real_shares:.6f}, retrying...")
+                            log.warning(f"[CLOB] Balance mismatch. Fixed to {real_shares:.6f}")
                             continue
                         else:
-                            log.warning(f"[CLOB] On-chain balance = 0. Shares already sold.")
+                            log.warning(f"[CLOB] On-chain balance = 0. Already sold.")
                             return {'success': True, 'order_id': 'balance_zero', 'status': 'ALREADY_SOLD'}
                 except Exception:
                     pass
 
-            # Fatal errors — don't retry
+            # Fatal errors — orderbook deleted
             if 'No orderbook exists' in last_error or 'status_code=404' in last_error:
-                log.error(f'[CLOB] FATAL: Orderbook dead. No retry. Error: {last_error}')
+                log.error(f'[CLOB] FATAL: Orderbook dead. Error: {last_error}')
                 return {'success': False, 'error': last_error}
 
-            log.warning(f'[CLOB] SELL attempt {attempt}/{MAX_IMMEDIATE_RETRIES} failed: {last_error}')
+            log.warning(f'[CLOB] SELL attempt {attempt} exception: {last_error}')
             if attempt < MAX_IMMEDIATE_RETRIES:
-                await asyncio.sleep(2)  # Wait 2 seconds before retry
+                await asyncio.sleep(2)
 
     log.error(f'[CLOB] SELL FAILED after {MAX_IMMEDIATE_RETRIES} attempts: {last_error}')
     return {'success': False, 'error': last_error}
@@ -311,7 +373,7 @@ CFG = {
 
     # Liquidity & AI Entry Filters — REAL TRADE MODE
     'MIN_LIQ_DEPTH_MULT'  : 10.0,      # Orderbook bid depth 10x bet size — cegah slippage SL parah
-    'MIN_ML_CONFIDENCE'   : 58.0,      # ML 60% weight, accuracy 43.2% → threshold 58 agar filter ketat
+    'MIN_ML_CONFIDENCE'   : 60.0,      # ML confidence threshold 60%
     'TAKER_FEE'           : 0.02,      # Polymarket taker fee 2% per side (buy+sell)
     'SLIPPAGE_BUFFER'     : 0.02,      # Estimasi slippage 2% dari market order di pool dangkal
     'MAX_ENTRY_PRICE'     : 0.65,      # Max 0.65 — menghindari harga terlalu mahal
