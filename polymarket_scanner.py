@@ -372,7 +372,7 @@ CFG = {
     'MAX_HOLD_HOURS'      : 24,
 
     # Liquidity & AI Entry Filters — REAL TRADE MODE
-    'MIN_LIQ_DEPTH_MULT'  : 10.0,      # Orderbook bid depth 10x bet size — cegah slippage SL parah
+    'MIN_LIQ_DEPTH_MULT'  : 500.0,     # Orderbook bid depth 500x bet size ($500 absolute min for $1 bet)
     'MIN_ML_CONFIDENCE'   : 60.0,      # ML confidence threshold 60%
     'TAKER_FEE'           : 0.02,      # Polymarket taker fee 2% per side (buy+sell)
     'SLIPPAGE_BUFFER'     : 0.02,      # Estimasi slippage 2% dari market order di pool dangkal
